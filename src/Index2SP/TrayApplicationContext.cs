@@ -369,7 +369,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         var clear = new ToolStripMenuItem("Clear all") { Enabled = selected.Count > 0 };
         clear.Click += (_, _) =>
         {
-            _config.SuperProductivity.TagIds.Clear();
+            (_config.SuperProductivity.TagIds ??= new List<string>()).Clear();
             SaveTags("cleared all default tags");
         };
         parent.DropDownItems.Add(clear);
@@ -388,7 +388,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         try
         {
             _config.Save(_configPath);
-            _log.Info($"Default tags: {what} (now {_config.SuperProductivity.TagIds.Count})");
+            _log.Info($"Default tags: {what} (now {_config.SuperProductivity.TagIds?.Count ?? 0})");
         }
         catch (Exception ex)
         {
