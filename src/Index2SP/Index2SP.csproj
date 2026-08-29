@@ -15,8 +15,7 @@
     <Description>Pebble Index 01 webhook -> Super Productivity task bridge (Windows tray)</Description>
   </PropertyGroup>
 
-  <!-- Applied only when publishing with a RID, e.g.
-       dotnet publish -c Release -r win-x64 --self-contained true -->
+  <!-- Applied only when publishing with a RuntimeIdentifier (see build.ps1 / CI). -->
   <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
