@@ -1,6 +1,6 @@
 # Index2SP
 
-[![Build](https://github.com/jwebstas/Index2SP/actions/workflows/build.yml/badge.svg)](https://github.com/jwebstas/Index2SP/actions/workflows/build.yml)
+[![Build](https://github.com/BigWebstas/Index2SP/actions/workflows/build.yml/badge.svg)](https://github.com/BigWebstas/Index2SP/actions/workflows/build.yml)
 
 A small Windows **system-tray** app that receives the [Pebble Index 01](https://repebble.com/index)
 voice-note webhook and turns each transcription into a task in

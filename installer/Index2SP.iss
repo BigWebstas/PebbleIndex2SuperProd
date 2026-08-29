@@ -7,7 +7,7 @@
 #endif
 #define AppPublisher "Index2SP"
 #define AppExeName "Index2SP.exe"
-#define AppUrl "https://github.com/jwebstas/Index2SP"
+#define AppUrl "https://github.com/BigWebstas/Index2SP"
 
 ; Where `dotnet publish -c Release -r win-x64 --self-contained true` drops the output.
 #ifndef PublishDir
