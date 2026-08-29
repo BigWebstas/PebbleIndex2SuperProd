@@ -9,6 +9,7 @@
     <RootNamespace>Index2SP</RootNamespace>
     <AssemblyName>Index2SP</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <InvariantGlobalization>true</InvariantGlobalization>
     <Version>1.0.0</Version>
     <Product>Index2SP</Product>
