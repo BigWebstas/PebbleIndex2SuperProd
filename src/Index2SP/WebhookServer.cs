@@ -55,7 +55,9 @@ public sealed class WebhookServer : IAsyncDisposable
 
         app.MapGet("/health", () => Results.Json(new { ok = true, service = "index2sp", version = AppInfo.Version }));
 
-        app.MapPost(_config.WebhookPath, HandleWebhookAsync);
+        // Cast to Delegate so the returned IResult is written to the response
+        // (a bare method group binds as RequestDelegate and discards it).
+        app.MapPost(_config.WebhookPath, (Delegate)HandleWebhookAsync);
 
         // Any other path -> 404 with a hint (helps while wiring up the tunnel).
         app.MapFallback(() => Results.Json(
