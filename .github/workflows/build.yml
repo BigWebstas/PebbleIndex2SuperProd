@@ -43,17 +43,9 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
-      - name: Build app + installer
+      - name: Build both variants + installers
         shell: pwsh
-        run: .\build.ps1 -Version '${{ steps.version.outputs.version }}'
-
-      - name: Package portable build
-        shell: pwsh
-        run: |
-          $pub = 'src/Index2SP/bin/Release/net8.0-windows/win-x64/publish'
-          if (-not (Test-Path "$pub/Index2SP.exe")) { throw "publish output missing" }
-          Compress-Archive -Path "$pub/*" `
-            -DestinationPath "dist/Index2SP-portable-${{ steps.version.outputs.version }}.zip" -Force
+        run: .\build.ps1 -Version '${{ steps.version.outputs.version }}' -Mode both
 
       - name: List outputs
         shell: pwsh

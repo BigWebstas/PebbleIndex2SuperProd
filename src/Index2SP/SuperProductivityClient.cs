@@ -62,6 +62,45 @@ public sealed class SuperProductivityClient : IDisposable
         return new CreateResult(id, Truncate(body, 2000));
     }
 
+    public Task<IReadOnlyList<SpNamedItem>> GetProjectsAsync(CancellationToken ct = default)
+        => GetNamedListAsync("projects", includeArchived: false, ct);
+
+    public Task<IReadOnlyList<SpNamedItem>> GetTagsAsync(CancellationToken ct = default)
+        => GetNamedListAsync("tags", includeArchived: true, ct);
+
+    private async Task<IReadOnlyList<SpNamedItem>> GetNamedListAsync(string path, bool includeArchived, CancellationToken ct)
+    {
+        using var resp = await _http.GetAsync(path, ct);
+        var body = await resp.Content.ReadAsStringAsync(ct);
+
+        if (resp.StatusCode == HttpStatusCode.Unauthorized)
+            throw new SpApiException($"Super Productivity rejected the token (401) on GET /{path}.");
+        if (!resp.IsSuccessStatusCode)
+            throw new SpApiException($"GET /{path} returned HTTP {(int)resp.StatusCode}.");
+
+        JsonElement root;
+        try { root = JsonSerializer.Deserialize<JsonElement>(body, JsonOpts); }
+        catch (JsonException ex) { throw new SpApiException($"GET /{path}: could not parse response ({ex.Message})"); }
+
+        // Tolerate both { ok, data: [...] } and a bare [...]
+        var arr = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var d) ? d : root;
+        if (arr.ValueKind != JsonValueKind.Array)
+            return Array.Empty<SpNamedItem>();
+
+        var list = new List<SpNamedItem>();
+        foreach (var el in arr.EnumerateArray())
+        {
+            if (el.ValueKind != JsonValueKind.Object) continue;
+            if (!el.TryGetProperty("id", out var idEl) || idEl.GetString() is not { Length: > 0 } id) continue;
+            if (!includeArchived && el.TryGetProperty("isArchived", out var arch) &&
+                arch.ValueKind == JsonValueKind.True) continue;
+
+            var title = el.TryGetProperty("title", out var tEl) ? tEl.GetString() : null;
+            list.Add(new SpNamedItem(id, string.IsNullOrWhiteSpace(title) ? id : title!));
+        }
+        return list;
+    }
+
     /// <summary>Probe the API. Tries GET /health (unauthenticated) then GET /tasks.</summary>
     public async Task<string> TestAsync(CancellationToken ct = default)
     {

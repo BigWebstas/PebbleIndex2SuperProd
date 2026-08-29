@@ -62,3 +62,6 @@ public sealed class SpEnvelope
         [JsonPropertyName("message")] public string? Message { get; set; }
     }
 }
+
+/// <summary>An id/title pair from GET /projects or GET /tags.</summary>
+public sealed record SpNamedItem(string Id, string Title);

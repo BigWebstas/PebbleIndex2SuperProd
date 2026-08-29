@@ -14,6 +14,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly Logger _log;
     private readonly NotifyIcon _tray;
     private readonly Control _marshal;
+    private readonly System.Windows.Forms.Timer _healthTimer;
 
     private AppConfig _config;
     private WebhookServer? _server;
@@ -21,6 +22,12 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     private int _created;
     private int _failed;
+
+    private SpHealth _spHealth = SpHealth.Unknown;
+    private bool _healthCheckInFlight;
+
+    private IReadOnlyList<SpNamedItem> _projectsCache = Array.Empty<SpNamedItem>();
+    private IReadOnlyList<SpNamedItem> _tagsCache = Array.Empty<SpNamedItem>();
 
     public TrayApplicationContext(AppConfig config, string configPath, Logger log)
     {
@@ -35,17 +42,32 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         _tray = new NotifyIcon
         {
-            Icon = IconFactory.Create(active: true),
+            Icon = IconFactory.Create(listening: false, SpHealth.Unknown),
             Text = "Index2SP",
             Visible = true,
         };
         _tray.DoubleClick += (_, _) => ShowLog();
         _tray.BalloonTipClicked += (_, _) => ShowLog();
 
+        _healthTimer = new System.Windows.Forms.Timer();
+        _healthTimer.Tick += async (_, _) => await RunHealthCheckAsync(manual: false);
+        ConfigureHealthTimer();
+
         RebuildMenu();
 
         // Start once the message loop is pumping, so awaits resume on the UI thread.
         _marshal.BeginInvoke(new Action(() => _ = StartServerAsync(initial: true)));
+    }
+
+    private void ConfigureHealthTimer()
+    {
+        _healthTimer.Stop();
+        var seconds = _config.HealthCheckSeconds;
+        if (seconds > 0)
+        {
+            _healthTimer.Interval = seconds * 1000;
+            _healthTimer.Start();
+        }
     }
 
     // ---- menu ------------------------------------------------------------
@@ -66,6 +88,30 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         menu.Items.Add("Copy webhook URL", null, (_, _) => CopyWebhookUrl());
         menu.Items.Add("Test Super Productivity connection", null, async (_, _) => await TestConnectionAsync());
+        menu.Items.Add(new ToolStripSeparator());
+
+        var projectItem = new ToolStripMenuItem("Default project");
+        BuildProjectDropDown(projectItem);
+        projectItem.DropDownOpening += async (_, _) =>
+        {
+            var list = await FetchNamedListAsync(sp => sp.GetProjectsAsync(), "projects");
+            if (list is null) return;
+            _projectsCache = list;
+            try { BuildProjectDropDown(projectItem); } catch (Exception ex) { _log.Error("project menu", ex); }
+        };
+        menu.Items.Add(projectItem);
+
+        var tagsItem = new ToolStripMenuItem("Default tags");
+        BuildTagsDropDown(tagsItem);
+        tagsItem.DropDownOpening += async (_, _) =>
+        {
+            var list = await FetchNamedListAsync(sp => sp.GetTagsAsync(), "tags");
+            if (list is null) return;
+            _tagsCache = list;
+            try { BuildTagsDropDown(tagsItem); } catch (Exception ex) { _log.Error("tag menu", ex); }
+        };
+        menu.Items.Add(tagsItem);
+
         menu.Items.Add(new ToolStripSeparator());
 
         menu.Items.Add("Edit config…", null, (_, _) => OpenConfig());
@@ -90,10 +136,17 @@ public sealed class TrayApplicationContext : ApplicationContext
         _tray.ContextMenuStrip = menu;
     }
 
-    private string StatusLine() =>
-        _server?.IsRunning == true
-            ? $"Listening on {_config.ListenAddress}:{_config.Port}{_config.WebhookPath}"
-            : "Listener stopped";
+    private string StatusLine()
+    {
+        if (_server?.IsRunning != true) return "Listener stopped";
+        var sp = _spHealth switch
+        {
+            SpHealth.Ok => "SP reachable",
+            SpHealth.Unreachable => "SP unreachable",
+            _ => "SP not checked yet",
+        };
+        return $"Listening on {_config.ListenAddress}:{_config.Port}{_config.WebhookPath}  ·  {sp}";
+    }
 
     // ---- actions -------------------------------------------------------
 
@@ -107,6 +160,7 @@ public sealed class TrayApplicationContext : ApplicationContext
             await _server.StartAsync();
             UpdateTrayState();
             if (!initial) Notify("Listener started", StatusLine(), ToolTipIcon.Info);
+            _ = RunHealthCheckAsync(manual: false); // prime the SP status right away
         }
         catch (Exception ex)
         {
@@ -147,6 +201,8 @@ public sealed class TrayApplicationContext : ApplicationContext
             var reloaded = AppConfig.LoadOrCreate(_configPath);
             _config = reloaded;
             _log.Info("Config reloaded");
+            _spHealth = SpHealth.Unknown;
+            ConfigureHealthTimer();
             await StopServerAsync();
             await StartServerAsync();
             Notify("Config reloaded", StatusLine(), ToolTipIcon.Info);
@@ -158,20 +214,190 @@ public sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private async Task TestConnectionAsync()
+    private Task TestConnectionAsync() => RunHealthCheckAsync(manual: true);
+
+    /// <summary>
+    /// Probes the Super Productivity API. Runs on a timer (every <c>healthCheckSeconds</c>) to keep
+    /// the tray status fresh, and on demand from the menu. Only logs / notifies on state changes;
+    /// a manual run always notifies.
+    /// </summary>
+    private async Task RunHealthCheckAsync(bool manual)
     {
-        _log.Info("Testing Super Productivity connection…");
+        if (!manual && (_healthCheckInFlight || _server?.IsRunning != true)) return;
+        _healthCheckInFlight = true;
+        try
+        {
+            SpHealth state;
+            string message;
+            try
+            {
+                using var sp = new SuperProductivityClient(_config.SuperProductivity);
+                message = await sp.TestAsync();
+                state = SpHealth.Ok;
+            }
+            catch (Exception ex)
+            {
+                message = ex.Message;
+                state = SpHealth.Unreachable;
+            }
+
+            var prev = _spHealth;
+            _spHealth = state;
+
+            if (state != prev)
+            {
+                if (state == SpHealth.Ok)
+                    _log.Info(prev == SpHealth.Unreachable
+                        ? $"Super Productivity connection restored — {message}"
+                        : $"Super Productivity reachable — {message}");
+                else
+                    _log.Warn($"Super Productivity unreachable — {message}");
+
+                if (!manual && state == SpHealth.Unreachable && prev != SpHealth.Unreachable && _config.Notifications)
+                    Notify("Super Productivity unreachable", message, ToolTipIcon.Warning);
+
+                UpdateTrayState();
+            }
+
+            if (manual)
+                Notify(
+                    state == SpHealth.Ok ? "Super Productivity" : "Super Productivity — not reachable",
+                    message,
+                    state == SpHealth.Ok ? ToolTipIcon.Info : ToolTipIcon.Error);
+        }
+        finally
+        {
+            _healthCheckInFlight = false;
+        }
+    }
+
+    // ---- default project / tags pickers -------------------------------
+
+    private async Task<List<SpNamedItem>?> FetchNamedListAsync(
+        Func<SuperProductivityClient, Task<IReadOnlyList<SpNamedItem>>> call, string what)
+    {
         try
         {
             using var sp = new SuperProductivityClient(_config.SuperProductivity);
-            var msg = await sp.TestAsync();
-            _log.Info(msg);
-            Notify("Super Productivity", msg, ToolTipIcon.Info);
+            var list = await call(sp);
+            return list.ToList();
         }
         catch (Exception ex)
         {
-            _log.Error("Connection test failed", ex);
-            Notify("Super Productivity — not reachable", ex.Message, ToolTipIcon.Error);
+            _log.Error($"Couldn't load {what} from Super Productivity", ex);
+            Notify($"Couldn't load {what}", ex.Message, ToolTipIcon.Error);
+            return null;
+        }
+    }
+
+    private void BuildProjectDropDown(ToolStripMenuItem parent)
+    {
+        parent.DropDownItems.Clear();
+        var current = _config.SuperProductivity.ProjectId ?? "";
+
+        var none = new ToolStripMenuItem("(Inbox / no project)")
+        {
+            CheckOnClick = false,
+            Checked = current.Length == 0,
+        };
+        none.Click += (_, _) => SetDefaultProject("", "Inbox");
+        parent.DropDownItems.Add(none);
+
+        if (_projectsCache.Count == 0)
+        {
+            parent.DropDownItems.Add(new ToolStripMenuItem("Open this menu to load from Super Productivity…") { Enabled = false });
+            if (current.Length > 0)
+                parent.DropDownItems.Add(new ToolStripMenuItem($"current id: {current}") { Enabled = false, Checked = true });
+            return;
+        }
+
+        parent.DropDownItems.Add(new ToolStripSeparator());
+        foreach (var p in _projectsCache.OrderBy(p => p.Title, StringComparer.OrdinalIgnoreCase))
+        {
+            var id = p.Id;
+            var title = p.Title;
+            var item = new ToolStripMenuItem(title) { CheckOnClick = false, Checked = id == current };
+            item.Click += (_, _) => SetDefaultProject(id, title);
+            parent.DropDownItems.Add(item);
+        }
+    }
+
+    private void SetDefaultProject(string id, string label)
+    {
+        try
+        {
+            _config.SuperProductivity.ProjectId = id;
+            _config.Save(_configPath);
+            _log.Info(id.Length == 0 ? "Default project cleared (inbox)" : $"Default project set to \"{label}\" [{id}]");
+            Notify("Default project updated",
+                id.Length == 0 ? "New tasks go to the inbox." : $"New tasks → {label}", ToolTipIcon.Info);
+        }
+        catch (Exception ex)
+        {
+            _log.Error("Failed to save default project", ex);
+            Notify("Couldn't save default project", ex.Message, ToolTipIcon.Error);
+        }
+        finally
+        {
+            RebuildMenu();
+        }
+    }
+
+    private void BuildTagsDropDown(ToolStripMenuItem parent)
+    {
+        parent.DropDownItems.Clear();
+        var selected = new HashSet<string>(_config.SuperProductivity.TagIds ?? new List<string>(), StringComparer.Ordinal);
+
+        if (_tagsCache.Count == 0)
+        {
+            parent.DropDownItems.Add(new ToolStripMenuItem("Open this menu to load from Super Productivity…") { Enabled = false });
+            if (selected.Count > 0)
+                parent.DropDownItems.Add(new ToolStripMenuItem($"{selected.Count} tag id(s) currently set") { Enabled = false });
+            return;
+        }
+
+        foreach (var t in _tagsCache.OrderBy(t => t.Title, StringComparer.OrdinalIgnoreCase))
+        {
+            var id = t.Id;
+            var title = t.Title;
+            var item = new ToolStripMenuItem(title) { CheckOnClick = false, Checked = selected.Contains(id) };
+            item.Click += (_, _) => ToggleDefaultTag(id, title);
+            parent.DropDownItems.Add(item);
+        }
+
+        parent.DropDownItems.Add(new ToolStripSeparator());
+        var clear = new ToolStripMenuItem("Clear all") { Enabled = selected.Count > 0 };
+        clear.Click += (_, _) =>
+        {
+            _config.SuperProductivity.TagIds.Clear();
+            SaveTags("cleared all default tags");
+        };
+        parent.DropDownItems.Add(clear);
+    }
+
+    private void ToggleDefaultTag(string id, string label)
+    {
+        var tags = _config.SuperProductivity.TagIds ??= new List<string>();
+        var removed = tags.Remove(id);
+        if (!removed) tags.Add(id);
+        SaveTags(removed ? $"removed tag \"{label}\"" : $"added tag \"{label}\"");
+    }
+
+    private void SaveTags(string what)
+    {
+        try
+        {
+            _config.Save(_configPath);
+            _log.Info($"Default tags: {what} (now {_config.SuperProductivity.TagIds.Count})");
+        }
+        catch (Exception ex)
+        {
+            _log.Error("Failed to save default tags", ex);
+            Notify("Couldn't save default tags", ex.Message, ToolTipIcon.Error);
+        }
+        finally
+        {
+            RebuildMenu();
         }
     }
 
@@ -289,7 +515,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         var running = _server?.IsRunning == true;
         _tray.Icon?.Dispose();
-        _tray.Icon = IconFactory.Create(active: running);
+        _tray.Icon = IconFactory.Create(running, _spHealth);
         _tray.Text = Truncate($"Index2SP — {StatusLine()}", 63);
         RebuildMenu();
     }
@@ -312,6 +538,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         if (disposing)
         {
+            _healthTimer.Dispose();
             _server?.DisposeAsync().AsTask().GetAwaiter().GetResult();
             _tray.Dispose();
             _logForm?.Dispose();
@@ -321,23 +548,39 @@ public sealed class TrayApplicationContext : ApplicationContext
     }
 }
 
+/// <summary>Result of the background Super Productivity health check.</summary>
+internal enum SpHealth { Unknown, Ok, Unreachable }
+
 /// <summary>Draws the tray icon at runtime so the project ships without a binary .ico.</summary>
 internal static class IconFactory
 {
-    public static Icon Create(bool active)
+    public static Icon Create(bool listening, SpHealth health)
     {
+        // ring shows the listener; dot shows the Super Productivity link
+        var ringColor = listening
+            ? Color.FromArgb(0x2E, 0xA0, 0x43)   // green
+            : Color.FromArgb(0x8A, 0x8A, 0x8A);  // grey
+
+        var dotColor = !listening
+            ? Color.FromArgb(0x5A, 0x5A, 0x5A)               // grey
+            : health switch
+            {
+                SpHealth.Ok => Color.FromArgb(0x1F, 0x6F, 0xEB),          // blue
+                SpHealth.Unreachable => Color.FromArgb(0xE3, 0x6A, 0x17), // orange
+                _ => Color.FromArgb(0x9A, 0x9A, 0x9A),                    // grey — not checked
+            };
+
         using var bmp = new Bitmap(32, 32);
         using (var g = Graphics.FromImage(bmp))
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.Clear(Color.Transparent);
 
-            var ring = active ? Color.FromArgb(0x2E, 0xA0, 0x43) : Color.FromArgb(0x8A, 0x8A, 0x8A);
-            using var pen = new Pen(ring, 4f);
+            using var pen = new Pen(ringColor, 4f);
             g.DrawEllipse(pen, 4, 4, 24, 24);
 
-            using var dot = new SolidBrush(active ? Color.FromArgb(0x1F, 0x6F, 0xEB) : Color.FromArgb(0x5A, 0x5A, 0x5A));
-            g.FillEllipse(dot, 13, 13, 6, 6);
+            using var dot = new SolidBrush(dotColor);
+            g.FillEllipse(dot, 12, 12, 8, 8);
         }
 
         var hicon = bmp.GetHicon();

@@ -31,6 +31,10 @@ public sealed class AppConfig
     /// <summary>When true, show Windows balloon notifications for each success / failure.</summary>
     public bool Notifications { get; set; } = true;
 
+    /// <summary>Seconds between background Super Productivity health checks (GET /health) that keep
+    /// the tray status fresh. 0 disables the timer; minimum 15.</summary>
+    public int HealthCheckSeconds { get; set; } = 60;
+
     public SuperProductivityConfig SuperProductivity { get; set; } = new();
 
     public sealed class SuperProductivityConfig
@@ -48,6 +52,16 @@ public sealed class AppConfig
 
         /// <summary>Optional tag ids applied to every created task.</summary>
         public List<string> TagIds { get; set; } = new();
+
+        /// <summary>Optional: one tag applied to every task created from a Pebble capture
+        /// (e.g. a "voice-note" / "index" tag you can filter on in Super Productivity).
+        /// Give the tag id directly here…</summary>
+        public string CaptureTagId { get; set; } = "";
+
+        /// <summary>…or give the tag's name here and Index2SP resolves it to an id via GET /tags
+        /// (the tag must already exist in Super Productivity — the REST API cannot create tags).
+        /// Ignored when CaptureTagId is set.</summary>
+        public string CaptureTagName { get; set; } = "";
     }
 
     // ---- persistence -------------------------------------------------------
@@ -104,6 +118,8 @@ public sealed class AppConfig
         WebhookPath = WebhookPath.TrimEnd('/');
         if (WebhookPath.Length == 0) WebhookPath = "/pebble";
         if (TitleMaxLength is < 10 or > 300) TitleMaxLength = 300;
+        if (HealthCheckSeconds != 0)
+            HealthCheckSeconds = Math.Clamp(HealthCheckSeconds, 15, 3600);
         SuperProductivity ??= new SuperProductivityConfig();
         if (string.IsNullOrWhiteSpace(SuperProductivity.BaseUrl))
             SuperProductivity.BaseUrl = "http://127.0.0.1:3876";

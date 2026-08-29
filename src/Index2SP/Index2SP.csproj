@@ -16,12 +16,17 @@
     <Description>Pebble Index 01 webhook -> Super Productivity task bridge (Windows tray)</Description>
   </PropertyGroup>
 
-  <!-- Applied only when publishing with a RuntimeIdentifier (see build.ps1 / CI). -->
+  <!-- Applied only when publishing with a RuntimeIdentifier (see build.ps1 / CI):
+       single-file exe for both the self-contained and framework-dependent variants. -->
   <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
     <PublishSingleFile>true</PublishSingleFile>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <!-- Self-contained only: bundle native libs and compress the runtime. -->
+  <PropertyGroup Condition="'$(SelfContained)' == 'true'">
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
-    <DebugType>embedded</DebugType>
   </PropertyGroup>
 
   <!-- ASP.NET Core (Kestrel + multipart form parsing) hosted inside the WinForms process -->

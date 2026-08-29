@@ -26,7 +26,8 @@ Pebble Index 01  --(HTTPS multipart/form-data)-->  your HTTPS tunnel
 4. Converts the payload:
    - **title** = the transcription, trimmed and truncated to 300 chars,
    - **notes** = the full transcription plus capture metadata (recorded-at timestamp, client, audio size),
-   - optional **projectId** / **tagIds** from config applied to every task.
+   - optional **projectId** / **tagIds** from config applied to every task,
+   - optional **capture tag** (`captureTagId` / `captureTagName`) added to mark it as a voice note.
 5. `POST`s it to the Super Productivity Local REST API and shows a tray notification.
 
 ## Requirements
@@ -53,25 +54,34 @@ Open `Index2SP.sln` in Visual Studio or Rider to build/debug interactively.
 
 ## Installer
 
-An [Inno Setup](https://jrsoftware.org/isinfo.php) script builds a per-user setup `.exe`
-(no admin / UAC prompt — installs under `%LOCALAPPDATA%\Programs\Index2SP`).
+[Inno Setup](https://jrsoftware.org/isinfo.php) per-user setup `.exe` (no admin / UAC prompt —
+installs under `%LOCALAPPDATA%\Programs\Index2SP`), in **two variants**:
+
+| Variant | Size | Prerequisite |
+|---|---|---|
+| **self-contained** (`Index2SP-Setup-<v>.exe`) | ~80 MB | none — bundles the .NET runtime |
+| **framework-dependent** (`Index2SP-Setup-fd-<v>.exe`) | ~3 MB | [.NET Desktop Runtime 8](https://dotnet.microsoft.com/download/dotnet/8.0/runtime) **and** ASP.NET Core Runtime 8 (x64) |
+
+The `-fd` installer checks for both runtimes on launch and points you to the download if either
+is missing. Portable `.zip`s of each variant are produced too.
 
 ```powershell
-# needs the .NET 8 SDK + Inno Setup 6 (ISCC.exe) on PATH or in Program Files
-.\build.ps1 -Version 1.0.0
-# -> dist\Index2SP-Setup-1.0.0.exe
+# needs the .NET 8 SDK + Inno Setup 6 (ISCC.exe)
+.\build.ps1 -Version 1.0.0                       # both variants + installers -> dist\
+.\build.ps1 -Version 1.0.0 -Mode self-contained  # just one
+.\build.ps1 -SkipInstaller                       # publish + zip, no installer
 ```
 
-`build.ps1` runs `dotnet publish` (self-contained, single file) then `ISCC installer\Index2SP.iss`.
-Use `.\build.ps1 -SkipInstaller` for just the published exe.
+`build.ps1` runs `dotnet publish` (single file) per variant then `ISCC installer\Index2SP.iss`
+(passing `/DFrameworkDependent` for the `-fd` build).
 
 ### CI / releases
 
-`.github/workflows/build.yml` builds the app + installer on `windows-latest` for every push and
-PR (installs Inno Setup via Chocolatey, runs `build.ps1`) and uploads the setup `.exe` and a
-portable `.zip` as workflow artifacts.
+`.github/workflows/build.yml` builds **both variants + installers** on `windows-latest` for every
+push and PR (installs Inno Setup via Chocolatey, runs `build.ps1 -Mode both`) and uploads all four
+files (`*-Setup-*.exe`, `*-portable-*.zip`) as a workflow artifact.
 
-Pushing a tag like `v1.2.0` builds with that version and publishes a **GitHub Release** with both
+Pushing a tag like `v1.2.0` builds with that version and publishes a **GitHub Release** with all
 files attached:
 
 ```bash
@@ -107,10 +117,13 @@ See [`config.example.json`](config.example.json) for all fields.
 | `inboundAuthToken` | Optional shared secret. If set, Pebble must send `Authorization: Bearer <token>` (add it as a custom header in the Pebble webhook settings). Strongly recommended since the endpoint is internet-facing. |
 | `titleMaxLength` | Title cap (SP rejects > 300). |
 | `notifications` | Toggle Windows balloon tips. |
+| `healthCheckSeconds` | Background probe interval for the Super Productivity connection (keeps the tray status/icon fresh). `0` disables; min 15, default 60. |
 | `superProductivity.baseUrl` | Default `http://127.0.0.1:3876`. |
 | `superProductivity.accessToken` | Token from SP Settings → Misc → Local REST API. Sent as `Authorization: Bearer`. |
-| `superProductivity.projectId` | Optional existing active project id for every task. Blank = inbox. |
-| `superProductivity.tagIds` | Optional tag ids for every task. |
+| `superProductivity.projectId` | Optional existing active project id for every task. Blank = inbox. Set it from the tray → **Default project**. |
+| `superProductivity.tagIds` | Optional tag ids applied to every task. Manage from the tray → **Default tags**. |
+| `superProductivity.captureTagId` | Optional: one tag id applied to every task created from a Pebble capture (e.g. a "voice-note" tag to filter on). |
+| `superProductivity.captureTagName` | Alternative to `captureTagId` — the tag's **name**; resolved to an id via `GET /tags` (the tag must already exist). Ignored when `captureTagId` is set. |
 
 ## Wire up Pebble
 
@@ -128,7 +141,11 @@ See [`config.example.json`](config.example.json) for all fields.
 
 - **Start / Stop listener**
 - **Copy webhook URL** – the local URL; prepend your tunnel host for Pebble
-- **Test Super Productivity connection** – probes `GET /health` then `GET /tasks`
+- **Test Super Productivity connection** – probes `GET /health` then `GET /tasks` (also runs
+  automatically every `healthCheckSeconds`; the icon's centre dot is blue when SP is reachable,
+  orange when not)
+- **Default project ▸** – pick from your Super Productivity projects; writes `projectId` to config
+- **Default tags ▸** – toggle which tags every task gets; writes `tagIds` to config
 - **Edit config… / Reload config**
 - **Start at login** – toggles the per-user autostart registry entry
 - **View log / Open log folder** – logs live in `%APPDATA%\Index2SP\logs\`

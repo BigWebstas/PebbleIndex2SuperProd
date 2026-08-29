@@ -155,6 +155,7 @@ public sealed class WebhookServer : IAsyncDisposable
         try
         {
             using var sp = new SuperProductivityClient(_config.SuperProductivity);
+            await ApplyCaptureTagAsync(sp, taskReq, ctx.RequestAborted);
             var result = await sp.CreateTaskAsync(taskReq, ctx.RequestAborted);
             _log.Info($"Created Super Productivity task{(result.TaskId is null ? "" : $" {result.TaskId}")}: \"{taskReq.Title}\"");
             TaskCreated?.Invoke(taskReq.Title, result.TaskId);
@@ -167,6 +168,51 @@ public sealed class WebhookServer : IAsyncDisposable
             return Results.Json(new { ok = false, error = new { message = ex.Message } },
                 statusCode: StatusCodes.Status502BadGateway);
         }
+    }
+
+    private string? _resolvedCaptureTagId;
+
+    /// <summary>Adds the configured capture tag (by id, or resolved from name via GET /tags) to the task.</summary>
+    private async Task ApplyCaptureTagAsync(SuperProductivityClient sp, SpTaskRequest task, CancellationToken ct)
+    {
+        var cfg = _config.SuperProductivity;
+        string? tagId = null;
+
+        if (!string.IsNullOrWhiteSpace(cfg.CaptureTagId))
+        {
+            tagId = cfg.CaptureTagId.Trim();
+        }
+        else if (!string.IsNullOrWhiteSpace(cfg.CaptureTagName))
+        {
+            tagId = _resolvedCaptureTagId;
+            if (tagId is null)
+            {
+                try
+                {
+                    var name = cfg.CaptureTagName.Trim();
+                    var tags = await sp.GetTagsAsync(ct);
+                    var match = tags.FirstOrDefault(t => string.Equals(t.Title, name, StringComparison.OrdinalIgnoreCase));
+                    if (match is null)
+                    {
+                        _log.Warn($"captureTagName \"{name}\" not found in Super Productivity — task will not carry that tag");
+                        return;
+                    }
+                    tagId = _resolvedCaptureTagId = match.Id;
+                    _log.Info($"Resolved captureTagName \"{name}\" -> {match.Id}");
+                }
+                catch (Exception ex) when (ex is SpApiException or HttpRequestException or TaskCanceledException)
+                {
+                    _log.Warn($"Could not resolve captureTagName: {ex.Message}");
+                    return;
+                }
+            }
+        }
+
+        if (tagId is null) return;
+
+        task.TagIds ??= new List<string>();
+        if (!task.TagIds.Contains(tagId))
+            task.TagIds.Add(tagId);
     }
 
     private bool IsAuthorized(HttpRequest request)

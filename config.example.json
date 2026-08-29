@@ -5,10 +5,13 @@
   "inboundAuthToken": "change-me-to-a-long-random-string",
   "titleMaxLength": 300,
   "notifications": true,
+  "healthCheckSeconds": 60,
   "superProductivity": {
     "baseUrl": "http://127.0.0.1:3876",
     "accessToken": "paste-token-from-SP-Settings-Misc-Local-REST-API",
     "projectId": "",
-    "tagIds": []
+    "tagIds": [],
+    "captureTagId": "",
+    "captureTagName": "voice-note"
   }
 }

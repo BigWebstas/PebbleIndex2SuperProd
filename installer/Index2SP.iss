@@ -1,5 +1,7 @@
 ; Inno Setup script for Index2SP — https://jrsoftware.org/isinfo.php
-; Build:  iscc installer\Index2SP.iss   (after `dotnet publish` — see build.ps1)
+; Build:  iscc installer\Index2SP.iss                    (self-contained variant)
+;         iscc /DFrameworkDependent installer\Index2SP.iss  (needs .NET 8 runtimes)
+; Normally driven by build.ps1, which passes /DAppVersion and /DPublishDir.
 
 #define AppName "Index2SP"
 #ifndef AppVersion
@@ -9,9 +11,20 @@
 #define AppExeName "Index2SP.exe"
 #define AppUrl "https://github.com/BigWebstas/Index2SP"
 
-; Where `dotnet publish -c Release -r win-x64 --self-contained true` drops the output.
 #ifndef PublishDir
-  #define PublishDir "..\src\Index2SP\bin\Release\net8.0-windows\win-x64\publish"
+  #ifdef FrameworkDependent
+    #define PublishDir "..\artifacts\publish\framework-dependent"
+  #else
+    #define PublishDir "..\artifacts\publish\self-contained"
+  #endif
+#endif
+
+#ifdef FrameworkDependent
+  #define VariantSuffix "-fd"
+  #define VariantLabel " (requires .NET 8 runtime)"
+#else
+  #define VariantSuffix ""
+  #define VariantLabel ""
 #endif
 
 [Setup]
@@ -24,9 +37,9 @@ DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 UninstallDisplayIcon={app}\{#AppExeName}
-UninstallDisplayName={#AppName}
+UninstallDisplayName={#AppName}{#VariantLabel}
 OutputDir=..\dist
-OutputBaseFilename=Index2SP-Setup-{#AppVersion}
+OutputBaseFilename=Index2SP-Setup{#VariantSuffix}-{#AppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -74,3 +87,45 @@ Filename: "{sys}\taskkill.exe"; Parameters: "/IM {#AppExeName} /F"; Flags: runhi
 Type: filesandordirs; Name: "{app}"
 
 ; Note: user data in %APPDATA%\Index2SP (config.json, logs) is intentionally left in place.
+
+#ifdef FrameworkDependent
+[Code]
+const
+  DotNetDownloadUrl = 'https://dotnet.microsoft.com/download/dotnet/8.0/runtime';
+
+function DotNetRuntimesPresent(): Boolean;
+var
+  ResultCode: Integer;
+  TmpFile: String;
+  Contents: AnsiString;
+begin
+  Result := False;
+  TmpFile := ExpandConstant('{tmp}\index2sp-runtimes.txt');
+  if Exec(ExpandConstant('{cmd}'), '/C dotnet --list-runtimes > "' + TmpFile + '" 2>&1',
+          '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    if LoadStringFromFile(TmpFile, Contents) then
+      Result := (Pos('Microsoft.WindowsDesktop.App 8.', Contents) > 0) and
+                (Pos('Microsoft.AspNetCore.App 8.', Contents) > 0);
+  end;
+end;
+
+function InitializeSetup(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := True;
+  if not DotNetRuntimesPresent() then
+  begin
+    if MsgBox('This is the framework-dependent build of Index2SP. It needs both:' #13#10
+            + '  •  .NET Desktop Runtime 8' #13#10
+            + '  •  ASP.NET Core Runtime 8' #13#10 #13#10
+            + 'They were not detected on this PC. Open the download page now?' #13#10
+            + '(Install the "ASP.NET Core Runtime" and ".NET Desktop Runtime" x64 packages, '
+            + 'then run this installer again. Or use the self-contained installer instead.)',
+              mbConfirmation, MB_YESNO) = IDYES then
+      ShellExec('open', DotNetDownloadUrl, '', '', SW_SHOW, ewNoWait, ResultCode);
+    Result := False;
+  end;
+end;
+#endif
