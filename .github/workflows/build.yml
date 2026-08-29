@@ -1,0 +1,90 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Determine version
+        id: version
+        shell: pwsh
+        run: |
+          if ('${{ github.ref }}' -like 'refs/tags/v*') {
+            $ver = '${{ github.ref_name }}'.TrimStart('v')
+          } else {
+            $ver = "1.0.0-ci.${{ github.run_number }}"
+          }
+          "version=$ver" >> $env:GITHUB_OUTPUT
+          Write-Host "Building version $ver"
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build app + installer
+        shell: pwsh
+        run: .\build.ps1 -Version '${{ steps.version.outputs.version }}'
+
+      - name: Package portable build
+        shell: pwsh
+        run: |
+          $pub = 'src/Index2SP/bin/Release/net8.0-windows/win-x64/publish'
+          if (-not (Test-Path "$pub/Index2SP.exe")) { throw "publish output missing" }
+          Compress-Archive -Path "$pub/*" `
+            -DestinationPath "dist/Index2SP-portable-${{ steps.version.outputs.version }}.zip" -Force
+
+      - name: List outputs
+        shell: pwsh
+        run: Get-ChildItem dist | Format-Table Name, Length
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Index2SP-${{ steps.version.outputs.version }}
+          path: |
+            dist/*.exe
+            dist/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
