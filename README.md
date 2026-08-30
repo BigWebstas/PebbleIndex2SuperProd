@@ -118,6 +118,7 @@ See [`config.example.json`](config.example.json) for all fields.
 | `titleMaxLength` | Title cap (SP rejects > 300). |
 | `notifications` | Toggle Windows balloon tips. |
 | `healthCheckSeconds` | Background probe interval for the Super Productivity connection (keeps the tray status/icon fresh). `0` disables; min 15, default 60. |
+| `testEventPhrase` | A webhook whose transcription matches this (trimmed, case-insensitive) shows a **"Test received"** notification instead of creating a task — this is what Pebble's *send test event* produces. Blank disables. Default `Index webhook test event`. |
 | `superProductivity.baseUrl` | Default `http://127.0.0.1:3876`. |
 | `superProductivity.accessToken` | Token from SP Settings → Misc → Local REST API. Sent as `Authorization: Bearer`. |
 | `superProductivity.projectId` | Optional existing active project id for every task. Blank = inbox. Set it from the tray → **Default project**. |
@@ -135,7 +136,8 @@ See [`config.example.json`](config.example.json) for all fields.
    - **URL**: `https://<tunnel-host>/pebble`
    - **Custom header**: `Authorization: Bearer <your inboundAuthToken>`
    - **Send**: transcription (or both).
-3. Record a note on the ring. Watch the Index2SP tray notification and **View log**.
+3. Send Pebble's **test event** first — Index2SP pops a "Test received" notification (no task).
+4. Then record a real note on the ring. Watch the tray notification and **View log**.
 
 ## Tray menu
 

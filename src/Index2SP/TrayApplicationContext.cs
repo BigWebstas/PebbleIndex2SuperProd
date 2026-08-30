@@ -22,6 +22,7 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     private int _created;
     private int _failed;
+    private int _tests;
 
     private SpHealth _spHealth = SpHealth.Unknown;
     private bool _healthCheckInFlight;
@@ -78,7 +79,7 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         var status = new ToolStripMenuItem(StatusLine()) { Enabled = false };
         menu.Items.Add(status);
-        menu.Items.Add($"Tasks created: {_created}   failed: {_failed}").Enabled = false;
+        menu.Items.Add($"Tasks created: {_created}   failed: {_failed}   tests: {_tests}").Enabled = false;
         menu.Items.Add(new ToolStripSeparator());
 
         var toggle = new ToolStripMenuItem(
@@ -157,6 +158,7 @@ public sealed class TrayApplicationContext : ApplicationContext
             _server = new WebhookServer(_config, _log);
             _server.TaskCreated += OnTaskCreated;
             _server.WebhookFailed += OnWebhookFailed;
+            _server.TestEventReceived += OnTestEventReceived;
             await _server.StartAsync();
             UpdateTrayState();
             if (!initial) Notify("Listener started", StatusLine(), ToolTipIcon.Info);
@@ -176,6 +178,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         if (_server is null) return;
         _server.TaskCreated -= OnTaskCreated;
         _server.WebhookFailed -= OnWebhookFailed;
+        _server.TestEventReceived -= OnTestEventReceived;
         await _server.StopAsync();
         _server = null;
         UpdateTrayState();
@@ -508,6 +511,17 @@ public sealed class TrayApplicationContext : ApplicationContext
             RebuildMenu();
             if (_config.Notifications)
                 Notify("Webhook failed", message, ToolTipIcon.Error);
+        });
+    }
+
+    private void OnTestEventReceived(string remote)
+    {
+        RunOnUi(() =>
+        {
+            _tests++;
+            RebuildMenu();
+            // Always shown — this is an explicitly requested connectivity check.
+            Notify("Test received", $"Pebble webhook is reaching Index2SP (from {remote}). No task created.", ToolTipIcon.Info);
         });
     }
 

@@ -31,6 +31,8 @@ public sealed class WebhookServer : IAsyncDisposable
     public event Action<string, string?>? TaskCreated;   // (title, taskId)
     /// <summary>Raised on the thread pool when a webhook call fails.</summary>
     public event Action<string>? WebhookFailed;          // (message)
+    /// <summary>Raised on the thread pool for a Pebble connectivity-test webhook (no task created).</summary>
+    public event Action<string>? TestEventReceived;      // (remote)
 
     public async Task StartAsync()
     {
@@ -138,6 +140,15 @@ public sealed class WebhookServer : IAsyncDisposable
         _log.Info($"Webhook from {remote}: client='{payload.Client}', " +
                   $"transcription={(string.IsNullOrWhiteSpace(payload.Transcription) ? "none" : payload.Transcription!.Length + " chars")}, " +
                   $"audio={(payload.HasAudio ? "yes" : "no")}");
+
+        var testPhrase = _config.TestEventPhrase;
+        if (!string.IsNullOrWhiteSpace(testPhrase) &&
+            string.Equals(payload.Transcription?.Trim(), testPhrase.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            _log.Info($"Connectivity-test webhook from {remote} — notifying, no task created");
+            TestEventReceived?.Invoke(remote);
+            return Results.Json(new { ok = true, data = new { test = true, message = "test event received" } });
+        }
 
         SpTaskRequest taskReq;
         try

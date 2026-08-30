@@ -35,6 +35,11 @@ public sealed class AppConfig
     /// the tray status fresh. 0 disables the timer; minimum 15.</summary>
     public int HealthCheckSeconds { get; set; } = 60;
 
+    /// <summary>A webhook whose transcription equals this phrase (trimmed, case-insensitive) is
+    /// treated as a connectivity test — it shows a notification instead of creating a task.
+    /// This is what Pebble's "send test event" produces. Blank disables the check.</summary>
+    public string TestEventPhrase { get; set; } = "Index webhook test event";
+
     public SuperProductivityConfig SuperProductivity { get; set; } = new();
 
     public sealed class SuperProductivityConfig
