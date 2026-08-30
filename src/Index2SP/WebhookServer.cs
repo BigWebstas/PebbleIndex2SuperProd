@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -46,6 +47,12 @@ public sealed class WebhookServer : IAsyncDisposable
         });
 
         builder.Logging.ClearProviders();
+
+        // We host this inside the Avalonia app and manage shutdown ourselves. The default
+        // ConsoleLifetime would install its own SIGTERM/SIGINT handlers that cancel the signal
+        // without ever exiting (we never call app.WaitForShutdown), leaving the process unkillable.
+        builder.Services.AddSingleton<IHostLifetime, NoopHostLifetime>();
+
         builder.WebHost.ConfigureKestrel(k =>
         {
             k.Limits.MaxRequestBodySize = 30 * 1024 * 1024; // Index audio clips are small; 30 MB is plenty
@@ -253,4 +260,11 @@ public static class AppInfo
 {
     public static string Version =>
         typeof(AppInfo).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
+}
+
+/// <summary>No-op <see cref="IHostLifetime"/> so the in-process web host doesn't touch OS signals.</summary>
+internal sealed class NoopHostLifetime : IHostLifetime
+{
+    public Task WaitForStartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

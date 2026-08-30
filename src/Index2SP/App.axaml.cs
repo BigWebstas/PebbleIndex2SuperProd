@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -77,10 +78,12 @@ public partial class App : Application
             return;
         }
 
+        context.Cancel = true; // we terminate the process ourselves, after draining
+
         _log?.Info($"Received {context.Signal} — stopping webhook listener and exiting");
 
-        // Drain Kestrel off the signal thread with a hard timeout. Run without touching
-        // the Avalonia dispatcher (calling Shutdown() from here can deadlock the UI thread).
+        // Drain Kestrel off the signal thread with a hard timeout. Don't touch the Avalonia
+        // dispatcher from here — calling Shutdown() deadlocks the UI thread.
         try
         {
             Task.Run(() => _tray?.StopServerForShutdown()).Wait(TimeSpan.FromSeconds(3));
@@ -92,7 +95,13 @@ public partial class App : Application
 
         _log?.Info("Index2SP exiting");
 
-        // Not setting context.Cancel: the runtime's default action for
-        // SIGTERM/SIGINT/SIGQUIT now terminates the process.
+        // Last-resort hard kill if Environment.Exit stalls (e.g. a wedged ProcessExit handler).
+        new Thread(() =>
+        {
+            Thread.Sleep(3000);
+            try { Process.GetCurrentProcess().Kill(); } catch { /* nothing left to do */ }
+        }) { IsBackground = true }.Start();
+
+        Environment.Exit(0);
     }
 }
