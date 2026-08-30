@@ -93,7 +93,7 @@ Type: filesandordirs; Name: "{app}"
 const
   DotNetDownloadUrl = 'https://dotnet.microsoft.com/download/dotnet/8.0/runtime';
 
-function DotNetRuntimesPresent(): Boolean;
+function AspNetCore8Present(): Boolean;
 var
   ResultCode: Integer;
   TmpFile: String;
@@ -105,8 +105,7 @@ begin
           '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
   begin
     if LoadStringFromFile(TmpFile, Contents) then
-      Result := (Pos('Microsoft.WindowsDesktop.App 8.', Contents) > 0) and
-                (Pos('Microsoft.AspNetCore.App 8.', Contents) > 0);
+      Result := Pos('Microsoft.AspNetCore.App 8.', Contents) > 0;
   end;
 end;
 
@@ -115,14 +114,13 @@ var
   ResultCode: Integer;
 begin
   Result := True;
-  if not DotNetRuntimesPresent() then
+  if not AspNetCore8Present() then
   begin
-    if MsgBox('This is the framework-dependent build of Index2SP. It needs both:' #13#10
-            + '  •  .NET Desktop Runtime 8' #13#10
-            + '  •  ASP.NET Core Runtime 8' #13#10 #13#10
-            + 'They were not detected on this PC. Open the download page now?' #13#10
-            + '(Install the "ASP.NET Core Runtime" and ".NET Desktop Runtime" x64 packages, '
-            + 'then run this installer again. Or use the self-contained installer instead.)',
+    if MsgBox('This is the framework-dependent build of Index2SP. It needs the' #13#10
+            + 'ASP.NET Core Runtime 8 (x64), which was not detected on this PC.' #13#10 #13#10
+            + 'Open the download page now?' #13#10
+            + '(Install "ASP.NET Core Runtime 8" then run this installer again, '
+            + 'or use the self-contained installer instead.)',
               mbConfirmation, MB_YESNO) = IDYES then
       ShellExec('open', DotNetDownloadUrl, '', '', SW_SHOW, ewNoWait, ResultCode);
     Result := False;

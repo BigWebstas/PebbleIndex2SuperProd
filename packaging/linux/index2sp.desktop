@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Index2SP
+Comment=Pebble Index 01 webhook -> Super Productivity task bridge
+Exec=index2sp
+Terminal=false
+Categories=Utility;Network;
+StartupNotify=false

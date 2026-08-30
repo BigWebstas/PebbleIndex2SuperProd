@@ -1,0 +1,22 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Index2SP.ToastWindow"
+        Title="Index2SP"
+        Width="360" SizeToContent="Height"
+        CanResize="False"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        Topmost="True"
+        SystemDecorations="None"
+        Background="Transparent"
+        TransparencyLevelHint="Transparent">
+  <Border Background="#1F1F1F" CornerRadius="8" BorderBrush="#3A3A3A" BorderThickness="1" Padding="14,12">
+    <Grid ColumnDefinitions="4,10,*">
+      <Rectangle x:Name="Accent" Grid.Column="0" RadiusX="2" RadiusY="2" VerticalAlignment="Stretch" />
+      <StackPanel Grid.Column="2" Spacing="3">
+        <TextBlock x:Name="TitleText" FontWeight="SemiBold" Foreground="#F2F2F2" />
+        <TextBlock x:Name="BodyText" TextWrapping="Wrap" MaxLines="4" Foreground="#C8C8C8" FontSize="12" />
+      </StackPanel>
+    </Grid>
+  </Border>
+</Window>
