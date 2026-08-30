@@ -2,36 +2,45 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <UseWindowsForms>true</UseWindowsForms>
     <RootNamespace>Index2SP</RootNamespace>
     <AssemblyName>Index2SP</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <Version>1.0.0</Version>
     <Product>Index2SP</Product>
-    <Description>Pebble Index 01 webhook -> Super Productivity task bridge (Windows tray)</Description>
+    <Description>Pebble Index 01 webhook -&gt; Super Productivity task bridge</Description>
   </PropertyGroup>
 
-  <!-- Applied only when publishing with a RuntimeIdentifier (see build.ps1 / CI):
-       single-file exe for both the self-contained and framework-dependent variants. -->
+  <!-- Single self-extracting exe for both variants when publishing with a RuntimeIdentifier
+       (Avalonia/Skia ship native libs via NuGet, so they must be bundled even for the
+       framework-dependent build). -->
   <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
     <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <DebugType>embedded</DebugType>
   </PropertyGroup>
 
-  <!-- Self-contained only: bundle native libs and compress the runtime. -->
+  <!-- Self-contained only: compress the bundled runtime. -->
   <PropertyGroup Condition="'$(SelfContained)' == 'true'">
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
   </PropertyGroup>
 
-  <!-- ASP.NET Core (Kestrel + multipart form parsing) hosted inside the WinForms process -->
   <ItemGroup>
+    <!-- Kestrel + multipart form parsing (needs the ASP.NET Core runtime for framework-dependent builds) -->
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+
+    <PackageReference Include="Avalonia" Version="11.3.20" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.20" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.20" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.20" />
+
+    <!-- HKCU Run key on Windows; throws PlatformNotSupported elsewhere (guarded at call sites) -->
+    <PackageReference Include="Microsoft.Win32.Registry" Version="5.0.0" />
   </ItemGroup>
 
 </Project>

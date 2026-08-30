@@ -1,0 +1,22 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Index2SP.LogWindow"
+        Width="860" Height="480"
+        Title="Index2SP — Log"
+        WindowStartupLocation="CenterScreen">
+  <Grid RowDefinitions="*,Auto" Margin="0">
+    <TextBox x:Name="Box"
+             Grid.Row="0"
+             IsReadOnly="True"
+             AcceptsReturn="True"
+             TextWrapping="NoWrap"
+             FontFamily="Cascadia Mono,Consolas,DejaVu Sans Mono,monospace"
+             FontSize="12"
+             VerticalContentAlignment="Top"
+             VerticalAlignment="Stretch" />
+    <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="8" Spacing="8">
+      <Button x:Name="CopyBtn" Content="Copy all" />
+      <Button x:Name="ClearBtn" Content="Clear view" />
+    </StackPanel>
+  </Grid>
+</Window>

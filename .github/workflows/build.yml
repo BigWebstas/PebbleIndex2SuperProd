@@ -16,64 +16,75 @@ env:
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
 
 jobs:
-  build:
-    runs-on: windows-latest
-
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - id: v
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=1.0.0-ci.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          fi
+          cat "$GITHUB_OUTPUT"
 
-      - name: Set up .NET 8
-        uses: actions/setup-dotnet@v4
+  windows:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
-
-      - name: Determine version
-        id: version
-        shell: pwsh
-        run: |
-          if ('${{ github.ref }}' -like 'refs/tags/v*') {
-            $ver = '${{ github.ref_name }}'.TrimStart('v')
-          } else {
-            $ver = "1.0.0-ci.${{ github.run_number }}"
-          }
-          "version=$ver" >> $env:GITHUB_OUTPUT
-          Write-Host "Building version $ver"
-
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
-
       - name: Build both variants + installers
         shell: pwsh
-        run: .\build.ps1 -Version '${{ steps.version.outputs.version }}' -Mode both
-
+        run: .\build.ps1 -Version '${{ needs.version.outputs.version }}' -Mode both
       - name: List outputs
         shell: pwsh
         run: Get-ChildItem dist | Format-Table Name, Length
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: Index2SP-${{ steps.version.outputs.version }}
+          name: windows-${{ needs.version.outputs.version }}
           path: |
             dist/*.exe
             dist/*.zip
           if-no-files-found: error
           retention-days: 30
 
+  linux:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build both variants (tarballs)
+        run: bash scripts/package-linux.sh '${{ needs.version.outputs.version }}'
+      - name: List outputs
+        run: ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ needs.version.outputs.version }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
   release:
-    needs: build
+    needs: [version, windows, linux]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
