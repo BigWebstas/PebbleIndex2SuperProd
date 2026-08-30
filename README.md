@@ -43,8 +43,11 @@ Pebble Index 01  --(HTTPS multipart/form-data)-->  your HTTPS tunnel
 
 ## Install
 
-Each release ships **self-contained** builds (no runtime needed, ~80–90 MB) and
-**framework-dependent** builds (`-fd`, ~a few MB, need the **ASP.NET Core Runtime 8** installed).
+**Latest: [v1.2.1](https://github.com/BigWebstas/Index2SP/releases/latest)** — clean shutdown on
+`SIGTERM` / `SIGINT` (kill / `systemctl --user stop` / Ctrl+C). See [Releases](#releases) below.
+
+Each release ships **self-contained** builds (no runtime needed, ~50–55 MB) and
+**framework-dependent** builds (`-fd`, ~9 MB, need the **ASP.NET Core Runtime 8** installed).
 
 ### Windows
 
@@ -74,23 +77,35 @@ Or just run `./Index2SP` from the extracted folder. The `-fd` tarball needs
 dotnet build -c Release
 
 # Windows: both variants + Inno Setup installers (needs Inno Setup 6 / ISCC.exe)
-pwsh ./build.ps1 -Version 1.1.2                      # -> dist\
-pwsh ./build.ps1 -Version 1.1.2 -Mode self-contained
+pwsh ./build.ps1 -Version 1.2.1                      # -> dist\
+pwsh ./build.ps1 -Version 1.2.1 -Mode self-contained
 pwsh ./build.ps1 -SkipInstaller
 
 # Linux: both variants as tarballs
-bash scripts/package-linux.sh 1.1.2                  # -> dist/
+bash scripts/package-linux.sh 1.2.1                  # -> dist/
 ```
 
-### CI / releases
+### CI
 
 `.github/workflows/build.yml` builds the Windows variants + installers on `windows-latest` and the
 Linux variants on `ubuntu-latest` for every push and PR, uploading them as workflow artifacts.
-Pushing a tag like `v1.2.0` publishes a **GitHub Release** with every file attached:
+Pushing a `v*` tag publishes a **GitHub Release** with every file attached:
 
 ```bash
-git tag v1.2.0 && git push origin v1.2.0
+git tag v1.2.2 && git push origin v1.2.2
 ```
+
+## Releases
+
+| Version | Notes |
+|---|---|
+| **v1.2.1** | Fix: clean shutdown on `SIGTERM` / `SIGINT` / `SIGQUIT` — previously the process could only be stopped with `SIGKILL`. |
+| **v1.2.0** | First cross-platform release. UI ported from WinForms to Avalonia; now runs on **Linux** as well as Windows (Linux tarballs + install scripts, XDG autostart, `notify-send` notifications). |
+| **v1.1.1** | Webhooks with transcription `Index webhook test event` show a "Test received" notification instead of creating a task. |
+| **v1.1.0** | Framework-dependent build variant; tray "Default project" / "Default tags" pickers; single-tag `captureTagId` / `captureTagName`; background Super Productivity health check. |
+| **v1.0.0** | Initial Windows release: Pebble webhook → Super Productivity task, Inno Setup installer, run-at-login. |
+
+Full notes on the [releases page](https://github.com/BigWebstas/Index2SP/releases).
 
 ## Run at login
 
