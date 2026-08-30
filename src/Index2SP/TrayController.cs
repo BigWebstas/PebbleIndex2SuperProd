@@ -231,6 +231,18 @@ public sealed class TrayController : IDisposable
         }
     }
 
+    /// <summary>
+    /// Synchronously drains the webhook server. Safe to call from a non-UI thread (e.g. a POSIX
+    /// signal handler) — does not touch the dispatcher or any Avalonia object.
+    /// </summary>
+    public void StopServerForShutdown()
+    {
+        var server = _server;
+        if (server is null) return;
+        try { server.StopAsync().GetAwaiter().GetResult(); }
+        catch (Exception ex) { _log.Warn($"webhook server stop: {ex.Message}"); }
+    }
+
     private async Task StopServerAsync()
     {
         if (_server is null) return;

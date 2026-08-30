@@ -1,10 +1,10 @@
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
-using Avalonia.Threading;
 
 namespace Index2SP;
 
@@ -13,7 +13,6 @@ public partial class App : Application
     private TrayController? _tray;
     private Logger? _log;
     private readonly List<PosixSignalRegistration> _signals = new();
-    private Timer? _shutdownWatchdog;
     private int _shuttingDown;
 
     public override void Initialize() => AvaloniaXamlLoader.Load(this);
@@ -43,13 +42,13 @@ public partial class App : Application
 
             desktop.Exit += (_, _) =>
             {
-                _shutdownWatchdog?.Dispose();
                 foreach (var s in _signals) s.Dispose();
                 _signals.Clear();
                 _tray?.Dispose();
                 log.Info("Index2SP exiting");
             };
 
+            // Clean up on kill / systemctl stop / Ctrl+C — Avalonia's lifetime doesn't do this.
             RegisterSignal(PosixSignal.SIGTERM);
             RegisterSignal(PosixSignal.SIGINT);
             RegisterSignal(PosixSignal.SIGQUIT);
@@ -72,22 +71,28 @@ public partial class App : Application
 
     private void OnPosixSignal(PosixSignalContext context)
     {
-        // Handle it ourselves: stop Kestrel + the tray cleanly instead of the runtime
-        // terminating the process where nothing gets a chance to shut down.
-        context.Cancel = true;
-
         if (Interlocked.Exchange(ref _shuttingDown, 1) != 0)
-            return;
-
-        _log?.Info($"Received {context.Signal} — shutting down");
-
-        Dispatcher.UIThread.Post(() =>
         {
-            if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
-                desktop.Shutdown();
-        });
+            context.Cancel = true; // another signal is already being handled
+            return;
+        }
 
-        // Safety net if the UI thread is wedged and can't run the shutdown.
-        _shutdownWatchdog = new Timer(_ => Environment.Exit(0), null, 5000, Timeout.Infinite);
+        _log?.Info($"Received {context.Signal} — stopping webhook listener and exiting");
+
+        // Drain Kestrel off the signal thread with a hard timeout. Run without touching
+        // the Avalonia dispatcher (calling Shutdown() from here can deadlock the UI thread).
+        try
+        {
+            Task.Run(() => _tray?.StopServerForShutdown()).Wait(TimeSpan.FromSeconds(3));
+        }
+        catch (Exception ex)
+        {
+            _log?.Warn($"shutdown drain: {ex.Message}");
+        }
+
+        _log?.Info("Index2SP exiting");
+
+        // Not setting context.Cancel: the runtime's default action for
+        // SIGTERM/SIGINT/SIGQUIT now terminates the process.
     }
 }
