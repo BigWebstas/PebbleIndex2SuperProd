@@ -6,3 +6,4 @@ artifacts/
 *.user
 .vs/
 *.DotSettings.user
+CLAUDE.md
