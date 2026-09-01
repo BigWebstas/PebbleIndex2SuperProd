@@ -7,3 +7,4 @@ artifacts/
 .vs/
 *.DotSettings.user
 CLAUDE.md
+.idea/
