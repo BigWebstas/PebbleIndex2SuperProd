@@ -6,6 +6,8 @@
   "titleMaxLength": 300,
   "notifications": true,
   "healthCheckSeconds": 60,
+  "outboxRetrySeconds": 60,
+  "outboxMaxAttempts": 0,
   "testEventPhrase": "Index webhook test event",
   "superProductivity": {
     "baseUrl": "http://127.0.0.1:3876",
