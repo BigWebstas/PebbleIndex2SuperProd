@@ -48,7 +48,7 @@ jobs:
         run: Get-ChildItem dist | Format-Table Name, Length
       # Only tag builds need stored artifacts (the release job downloads them).
       # Skipping on branch/PR builds keeps us under the account artifact-storage quota.
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         if: startsWith(github.ref, 'refs/tags/v')
         with:
           name: windows-${{ needs.version.outputs.version }}
@@ -71,7 +71,7 @@ jobs:
       - name: List outputs
         run: ls -la dist
       # See the note on the Windows upload step.
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         if: startsWith(github.ref, 'refs/tags/v')
         with:
           name: linux-${{ needs.version.outputs.version }}
@@ -87,7 +87,7 @@ jobs:
       contents: write
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           path: artifacts
       - name: Publish GitHub Release
