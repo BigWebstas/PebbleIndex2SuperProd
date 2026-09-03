@@ -18,20 +18,26 @@ public sealed class WebhookServer : IAsyncDisposable
 {
     private readonly AppConfig _config;
     private readonly Logger _log;
+    private readonly CaptureTagResolver _captureTag;
+    private readonly Outbox _outbox;
     private WebApplication? _app;
 
-    public WebhookServer(AppConfig config, Logger log)
+    public WebhookServer(AppConfig config, Logger log, CaptureTagResolver captureTag, Outbox outbox)
     {
         _config = config;
         _log = log;
+        _captureTag = captureTag;
+        _outbox = outbox;
     }
 
     public bool IsRunning => _app is not null;
 
     /// <summary>Raised on the thread pool after a task is created.</summary>
     public event Action<string, string?>? TaskCreated;   // (title, taskId)
-    /// <summary>Raised on the thread pool when a webhook call fails.</summary>
+    /// <summary>Raised on the thread pool when a webhook call fails and nothing was queued.</summary>
     public event Action<string>? WebhookFailed;          // (message)
+    /// <summary>Raised on the thread pool when SP was unreachable and the task went to the outbox.</summary>
+    public event Action<string>? TaskQueued;             // (title)
     /// <summary>Raised on the thread pool for a Pebble connectivity-test webhook (no task created).</summary>
     public event Action<string>? TestEventReceived;      // (remote)
 
@@ -173,64 +179,32 @@ public sealed class WebhookServer : IAsyncDisposable
         try
         {
             using var sp = new SuperProductivityClient(_config.SuperProductivity);
-            await ApplyCaptureTagAsync(sp, taskReq, ctx.RequestAborted);
-            var result = await sp.CreateTaskAsync(taskReq, ctx.RequestAborted);
+            // Not ctx.RequestAborted: if a slow tunnel drops the connection just as SP creates the
+            // task, cancelling here would make us re-queue it and create a duplicate on retry. The
+            // HTTP client's own 15 s timeout bounds the call.
+            await _captureTag.ApplyAsync(sp, taskReq, CancellationToken.None);
+            var result = await sp.CreateTaskAsync(taskReq, CancellationToken.None);
             _log.Info($"Created Super Productivity task{(result.TaskId is null ? "" : $" {result.TaskId}")}: \"{taskReq.Title}\"");
             TaskCreated?.Invoke(taskReq.Title, result.TaskId);
             return Results.Json(new { ok = true, data = new { taskId = result.TaskId, title = taskReq.Title } });
         }
-        catch (Exception ex) when (ex is SpApiException or HttpRequestException or TaskCanceledException)
+        catch (SpApiException ex) when (ex.Permanent)
         {
-            _log.Error($"Failed to create task \"{taskReq.Title}\"", ex);
+            // Retrying the same request can't help (bad token, rejected body) — fail loudly.
+            _log.Error($"Super Productivity rejected task \"{taskReq.Title}\" — not queued", ex);
             WebhookFailed?.Invoke(ex.Message);
             return Results.Json(new { ok = false, error = new { message = ex.Message } },
                 statusCode: StatusCodes.Status502BadGateway);
         }
-    }
-
-    private string? _resolvedCaptureTagId;
-
-    /// <summary>Adds the configured capture tag (by id, or resolved from name via GET /tags) to the task.</summary>
-    private async Task ApplyCaptureTagAsync(SuperProductivityClient sp, SpTaskRequest task, CancellationToken ct)
-    {
-        var cfg = _config.SuperProductivity;
-        string? tagId = null;
-
-        if (!string.IsNullOrWhiteSpace(cfg.CaptureTagId))
+        catch (Exception ex) when (ex is SpApiException or HttpRequestException or TaskCanceledException)
         {
-            tagId = cfg.CaptureTagId.Trim();
+            // SP unreachable / transient — persist and let the outbox retry it.
+            _log.Warn($"Could not deliver task \"{taskReq.Title}\" now ({ex.Message}) — queuing for retry");
+            _outbox.Enqueue(taskReq);
+            TaskQueued?.Invoke(taskReq.Title);
+            return Results.Json(new { ok = true, data = new { queued = true, title = taskReq.Title } },
+                statusCode: StatusCodes.Status202Accepted);
         }
-        else if (!string.IsNullOrWhiteSpace(cfg.CaptureTagName))
-        {
-            tagId = _resolvedCaptureTagId;
-            if (tagId is null)
-            {
-                try
-                {
-                    var name = cfg.CaptureTagName.Trim();
-                    var tags = await sp.GetTagsAsync(ct);
-                    var match = tags.FirstOrDefault(t => string.Equals(t.Title, name, StringComparison.OrdinalIgnoreCase));
-                    if (match is null)
-                    {
-                        _log.Warn($"captureTagName \"{name}\" not found in Super Productivity — task will not carry that tag");
-                        return;
-                    }
-                    tagId = _resolvedCaptureTagId = match.Id;
-                    _log.Info($"Resolved captureTagName \"{name}\" -> {match.Id}");
-                }
-                catch (Exception ex) when (ex is SpApiException or HttpRequestException or TaskCanceledException)
-                {
-                    _log.Warn($"Could not resolve captureTagName: {ex.Message}");
-                    return;
-                }
-            }
-        }
-
-        if (tagId is null) return;
-
-        task.TagIds ??= new List<string>();
-        if (!task.TagIds.Contains(tagId))
-            task.TagIds.Add(tagId);
     }
 
     private bool IsAuthorized(HttpRequest request)

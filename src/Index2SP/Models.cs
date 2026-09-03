@@ -65,3 +65,25 @@ public sealed class SpEnvelope
 
 /// <summary>An id/title pair from GET /projects or GET /tags.</summary>
 public sealed record SpNamedItem(string Id, string Title);
+
+/// <summary>
+/// One task waiting in the disk-backed outbox because Super Productivity could not be reached
+/// when its webhook arrived. Serialized as a JSON file under %APPDATA%\Index2SP\outbox\.
+/// </summary>
+public sealed class OutboxItem
+{
+    /// <summary>Sortable id — also the file name stem. Chronological order = delivery order.</summary>
+    public string Id { get; set; } = "";
+
+    public DateTimeOffset EnqueuedAt { get; set; }
+
+    /// <summary>Delivery attempts made so far (0 until the first retry pass touches it).</summary>
+    public int Attempts { get; set; }
+
+    public DateTimeOffset? LastAttemptAt { get; set; }
+
+    public string? LastError { get; set; }
+
+    /// <summary>The task to create, already carrying the configured project / default tags.</summary>
+    public SpTaskRequest Task { get; set; } = null!;
+}

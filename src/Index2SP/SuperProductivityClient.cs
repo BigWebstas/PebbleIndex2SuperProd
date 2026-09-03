@@ -37,7 +37,7 @@ public sealed class SuperProductivityClient : IDisposable
 
         if (resp.StatusCode == HttpStatusCode.Unauthorized)
             throw new SpApiException("Super Productivity rejected the token (401). " +
-                                     "Check superProductivity.accessToken in config.json.");
+                                     "Check superProductivity.accessToken in config.json.", permanent: true);
 
         SpEnvelope? envelope = null;
         try { envelope = JsonSerializer.Deserialize<SpEnvelope>(body, JsonOpts); }
@@ -46,7 +46,7 @@ public sealed class SuperProductivityClient : IDisposable
         if (envelope is { Ok: false })
         {
             var msg = envelope.Error?.Message ?? envelope.Error?.Code ?? "unknown error";
-            throw new SpApiException($"Super Productivity error: {msg}");
+            throw new SpApiException($"Super Productivity error: {msg}", permanent: true);
         }
 
         if (!resp.IsSuccessStatusCode)
@@ -136,4 +136,12 @@ public sealed class SuperProductivityClient : IDisposable
     public void Dispose() => _http.Dispose();
 }
 
-public sealed class SpApiException(string message) : Exception(message);
+/// <summary>
+/// An error from the Super Productivity API. <see cref="Permanent"/> is true when retrying the
+/// same request cannot help (bad token, request the API rejected) — the outbox discards those
+/// instead of retrying forever.
+/// </summary>
+public sealed class SpApiException(string message, bool permanent = false) : Exception(message)
+{
+    public bool Permanent { get; } = permanent;
+}

@@ -14,6 +14,10 @@ The transcription becomes the task title (capped at 300 chars); the full text
 plus capture metadata go in the notes. A configured project, tags, and a
 "voice-note" capture tag can be applied to every task.
 
+If Super Productivity is unreachable when a note arrives, the task is written to
+a disk-backed **outbox** (`%APPDATA%\Index2SP\outbox\`) and retried in the
+background until it lands, so nothing is lost while SP is closed.
+
 ## Requirements
 
 - Windows 10/11, or Linux with a system tray. Without a tray the app still runs
@@ -58,6 +62,8 @@ ones that matter:
 | `superProductivity.accessToken` | Token from SP Settings → Misc. Required. |
 | `superProductivity.projectId` / `tagIds` | Applied to every task. Blank project = inbox. |
 | `superProductivity.captureTagId` / `captureTagName` | Optional tag marking Pebble captures. |
+| `outboxRetrySeconds` | Seconds between retry passes for queued tasks when SP was unreachable. Default 60, clamped 10–3600. |
+| `outboxMaxAttempts` | Give up on a queued task after this many failed attempts and move it to `outbox\failed\`. Default `0` = retry forever. |
 | `testEventPhrase` | Transcription that triggers "Test received" instead of a task. Default `Index webhook test event`. |
 
 ## Build from source
@@ -80,4 +86,6 @@ all artifacts attached.
 - Audio-only webhooks are rejected (422) — no text to name a task.
 - The audio file is not stored; its size is noted in the task notes.
 - No recurring tasks or subtask hierarchy (the SP REST API can't).
+- Outbox retries are not deduplicated — if SP creates the task but the reply is
+  lost, a later retry can make a second copy. Rare in practice.
 - Full release notes: [Releases](https://github.com/BigWebstas/Index2SP/releases).

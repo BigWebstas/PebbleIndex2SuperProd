@@ -20,14 +20,18 @@ public sealed class TrayController : IDisposable
     private readonly Logger _log;
     private readonly TrayIcon _tray;
     private readonly DispatcherTimer _healthTimer;
+    private readonly DispatcherTimer _outboxTimer;
+    private readonly Outbox _outbox;
 
     private AppConfig _config;
+    private CaptureTagResolver _captureTag;
     private WebhookServer? _server;
     private LogWindow? _logWindow;
 
     private int _created;
     private int _failed;
     private int _tests;
+    private bool _outboxFlushInFlight;
 
     private SpHealth _spHealth = SpHealth.Unknown;
     private bool _healthCheckInFlight;
@@ -41,6 +45,10 @@ public sealed class TrayController : IDisposable
         _config = config;
         _configPath = configPath;
         _log = log;
+        _captureTag = new CaptureTagResolver(config.SuperProductivity, log);
+        _outbox = new Outbox(AppConfig.ConfigDirectory, log);
+        _outbox.ItemDelivered += OnOutboxDelivered;
+        _outbox.ItemFailed += OnOutboxFailed;
 
         _tray = new TrayIcon
         {
@@ -55,10 +63,16 @@ public sealed class TrayController : IDisposable
         _healthTimer.Tick += async (_, _) => await RunHealthCheckAsync(manual: false);
         ConfigureHealthTimer();
 
+        _outboxTimer = new DispatcherTimer();
+        _outboxTimer.Tick += (_, _) => _ = FlushOutboxAsync();
+        ConfigureOutboxTimer();
+
         RebuildMenu();
 
         // Start once the dispatcher loop is running so awaits resume on the UI thread.
         Dispatcher.UIThread.Post(() => _ = StartServerAsync(initial: true));
+        // Drain anything left in the outbox from a previous run.
+        Dispatcher.UIThread.Post(() => _ = FlushOutboxAsync());
     }
 
     private void ConfigureHealthTimer()
@@ -72,20 +86,32 @@ public sealed class TrayController : IDisposable
         }
     }
 
+    private void ConfigureOutboxTimer()
+    {
+        _outboxTimer.Stop();
+        _outboxTimer.Interval = TimeSpan.FromSeconds(_config.OutboxRetrySeconds);
+        _outboxTimer.Start();
+    }
+
     // ---- menu ----------------------------------------------------------
 
     private void RebuildMenu()
     {
         var menu = new NativeMenu();
 
+        var queued = _outbox.PendingCount;
+
         menu.Add(Disabled(StatusLine()));
-        menu.Add(Disabled($"Tasks created: {_created}   failed: {_failed}   tests: {_tests}"));
+        menu.Add(Disabled($"Tasks created: {_created}   failed: {_failed}   queued: {queued}   tests: {_tests}"));
         menu.Add(new NativeMenuItemSeparator());
 
         menu.Add(Action(_server?.IsRunning == true ? "Stop listener" : "Start listener",
             () => _ = ToggleServerAsync()));
         menu.Add(Action("Copy webhook URL", CopyWebhookUrl));
         menu.Add(Action("Test Super Productivity connection", () => _ = RunHealthCheckAsync(manual: true)));
+        if (queued > 0)
+            menu.Add(Action($"Retry {queued} queued task{(queued == 1 ? "" : "s")} now",
+                () => _ = FlushOutboxAsync()));
         menu.Add(new NativeMenuItemSeparator());
 
         menu.Add(new NativeMenuItem("Default project") { Menu = BuildProjectSubmenu() });
@@ -212,9 +238,10 @@ public sealed class TrayController : IDisposable
     {
         try
         {
-            _server = new WebhookServer(_config, _log);
+            _server = new WebhookServer(_config, _log, _captureTag, _outbox);
             _server.TaskCreated += OnTaskCreated;
             _server.WebhookFailed += OnWebhookFailed;
+            _server.TaskQueued += OnTaskQueued;
             _server.TestEventReceived += OnTestEventReceived;
             await _server.StartAsync();
             RefreshTray();
@@ -248,6 +275,7 @@ public sealed class TrayController : IDisposable
         if (_server is null) return;
         _server.TaskCreated -= OnTaskCreated;
         _server.WebhookFailed -= OnWebhookFailed;
+        _server.TaskQueued -= OnTaskQueued;
         _server.TestEventReceived -= OnTestEventReceived;
         await _server.StopAsync();
         _server = null;
@@ -274,7 +302,9 @@ public sealed class TrayController : IDisposable
             _config = AppConfig.LoadOrCreate(_configPath);
             _log.Info("Config reloaded");
             _spHealth = SpHealth.Unknown;
+            _captureTag = new CaptureTagResolver(_config.SuperProductivity, _log);
             ConfigureHealthTimer();
+            ConfigureOutboxTimer();
             await StopServerAsync();
             await StartServerAsync();
             Notify("Config reloaded", StatusLine(), NotifyKind.Info);
@@ -335,6 +365,41 @@ public sealed class TrayController : IDisposable
             _healthCheckInFlight = false;
         }
     }
+
+    // ---- outbox retry ----------------------------------------------
+
+    private async Task FlushOutboxAsync()
+    {
+        if (_outboxFlushInFlight) return;
+        _outboxFlushInFlight = true;
+        try
+        {
+            await _outbox.FlushAsync(_config.SuperProductivity, _captureTag, _config.OutboxMaxAttempts);
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"Outbox flush error: {ex.Message}");
+        }
+        finally
+        {
+            _outboxFlushInFlight = false;
+            RebuildMenu();
+        }
+    }
+
+    private void OnOutboxDelivered(string title, string? taskId) => Dispatcher.UIThread.Post(() =>
+    {
+        _created++;
+        RebuildMenu();
+        Notify("Queued task delivered", title, NotifyKind.Info);
+    });
+
+    private void OnOutboxFailed(string title, string error) => Dispatcher.UIThread.Post(() =>
+    {
+        _failed++;
+        RebuildMenu();
+        Notify("Queued task gave up", $"{title}\n{error}", NotifyKind.Error, force: true);
+    });
 
     // ---- default project / tags -------------------------------------
 
@@ -501,6 +566,7 @@ public sealed class TrayController : IDisposable
     private async Task QuitAsync()
     {
         _healthTimer.Stop();
+        _outboxTimer.Stop();
         await StopServerAsync();
         _tray.IsVisible = false;
         _desktop.Shutdown();
@@ -520,6 +586,13 @@ public sealed class TrayController : IDisposable
         _failed++;
         RebuildMenu();
         Notify("Webhook failed", message, NotifyKind.Error);
+    });
+
+    private void OnTaskQueued(string title) => Dispatcher.UIThread.Post(() =>
+    {
+        RebuildMenu();
+        Notify("Task queued for retry", $"Super Productivity unreachable — will keep trying.\n{title}",
+            NotifyKind.Warning);
     });
 
     private void OnTestEventReceived(string remote) => Dispatcher.UIThread.Post(() =>
@@ -548,6 +621,7 @@ public sealed class TrayController : IDisposable
     public void Dispose()
     {
         _healthTimer.Stop();
+        _outboxTimer.Stop();
         try { StopServerAsync().GetAwaiter().GetResult(); } catch { /* shutting down */ }
         try { _tray.IsVisible = false; _tray.Dispose(); } catch { /* ignore */ }
         try { _logWindow?.Close(); } catch { /* ignore */ }

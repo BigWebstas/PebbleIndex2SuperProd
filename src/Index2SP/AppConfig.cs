@@ -40,6 +40,14 @@ public sealed class AppConfig
     /// This is what Pebble's "send test event" produces. Blank disables the check.</summary>
     public string TestEventPhrase { get; set; } = "Index webhook test event";
 
+    /// <summary>Seconds between retry passes for the disk-backed outbox — tasks that couldn't be
+    /// delivered to Super Productivity when their webhook arrived. Clamped to 10–3600.</summary>
+    public int OutboxRetrySeconds { get; set; } = 60;
+
+    /// <summary>Give up on a queued task after this many failed delivery attempts and move its file
+    /// to outbox\failed\. 0 = retry forever (the default).</summary>
+    public int OutboxMaxAttempts { get; set; } = 0;
+
     public SuperProductivityConfig SuperProductivity { get; set; } = new();
 
     public sealed class SuperProductivityConfig
@@ -125,6 +133,8 @@ public sealed class AppConfig
         if (TitleMaxLength is < 10 or > 300) TitleMaxLength = 300;
         if (HealthCheckSeconds != 0)
             HealthCheckSeconds = Math.Clamp(HealthCheckSeconds, 15, 3600);
+        OutboxRetrySeconds = Math.Clamp(OutboxRetrySeconds, 10, 3600);
+        if (OutboxMaxAttempts < 0) OutboxMaxAttempts = 0;
         SuperProductivity ??= new SuperProductivityConfig();
         if (string.IsNullOrWhiteSpace(SuperProductivity.BaseUrl))
             SuperProductivity.BaseUrl = "http://127.0.0.1:3876";
