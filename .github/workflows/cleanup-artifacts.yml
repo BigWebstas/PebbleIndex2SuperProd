@@ -1,0 +1,42 @@
+name: Cleanup old artifacts
+
+# Safety net against the account's Actions artifact-storage quota. build.yml already
+# only uploads on v* tag builds (with a 7-day retention), so this should rarely find
+# anything — it exists in case a manual re-run, a longer retention change, or a stray
+# artifact from another workflow piles up before its retention expires it.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # daily, 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      max_age_days:
+        description: 'Delete artifacts older than this many days'
+        default: '2'
+
+permissions:
+  actions: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete artifacts older than max_age_days
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          MAX_AGE_DAYS: ${{ inputs.max_age_days || '2' }}
+        run: |
+          cutoff=$(date -u -d "-${MAX_AGE_DAYS} days" +%s)
+          echo "Deleting artifacts in $REPO created before $(date -u -d "@$cutoff")"
+
+          gh api --paginate "repos/$REPO/actions/artifacts" -q '.artifacts[] | [.id, .name, .created_at] | @tsv' \
+            | while IFS=$'\t' read -r id name created; do
+                created_ts=$(date -u -d "$created" +%s)
+                if [ "$created_ts" -lt "$cutoff" ]; then
+                  echo "  deleting #$id  $name  (created $created)"
+                  gh api -X DELETE "repos/$REPO/actions/artifacts/$id"
+                fi
+              done
+
+          echo "Remaining artifacts: $(gh api "repos/$REPO/actions/artifacts" -q '.total_count')"
