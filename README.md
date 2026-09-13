@@ -63,7 +63,10 @@ decides, per task:
 - **Note vs. to-do** — a fact, idea, or reference to save gets flagged as a
   note. If `joplin.enabled` is also on, a copy is sent to Joplin's Web Clipper
   API (Tools → Options → Web Clipper). The Super Productivity task is still
-  created either way — Joplin is additive, never a replacement.
+  created either way — Joplin is additive, never a replacement. Whenever an
+  auth token is set, the tray's background health check also probes Joplin
+  alongside Super Productivity, and **Joplin notes → Test Joplin connection**
+  checks it on demand.
 - **Shopping / errands** — "add bread, milk, and eggs to my shopping list"
   becomes three separate tasks (`bread`, `milk`, `eggs`), each stripped down to
   just the item. If `superProductivity.shoppingProjectId` is set, all of them
@@ -72,15 +75,24 @@ decides, per task:
 Any failure — no/bad API key, network, timeout, a malformed reply — falls back
 to the static config from the table below. A task is always created either way.
 
+By default tags are best-effort: Claude may pick one, and if it doesn't,
+`superProductivity.tagIds` stands for the task and Joplin notes get no tag at
+all. Turn on `aiClassifier.requireTags` (tray: **AI classifier → Require at
+least one tag**) to make tagging mandatory instead — Claude must pick at least
+one Super Productivity tag for every task, and at least one Joplin tag for
+every note, falling back to `superProductivity.tagIds` / `joplin.defaultTagIds`
+only if it still can't. With it off, Joplin notes skip AI tagging entirely and
+just get `joplin.defaultTagIds`.
+
 ## Configure
 
 First run writes `config.json` to `%APPDATA%\Index2SP\` (Windows) or
 `~/.config/Index2SP/` (Linux). Edit it from the tray menu, then **Reload config**.
 Most settings also have a tray shortcut — default project, default tags, start
 at login, and (under **AI classifier** / **Joplin notes**) the enabled toggles,
-API key / auth token prompts, model picker, shopping project, and default
-notebook. See [`config.example.json`](config.example.json) for every field; the
-ones that matter:
+API key / auth token prompts, model picker, shopping project, require-at-least-
+one-tag, default notebook, and default tag. See
+[`config.example.json`](config.example.json) for every field; the ones that matter:
 
 | Field | Meaning |
 |---|---|
@@ -91,9 +103,11 @@ ones that matter:
 | `superProductivity.captureTagId` / `captureTagName` | Optional tag marking Pebble captures. |
 | `aiClassifier.enabled` / `apiKey` | Turns on [AI classification](#ai-classification) above. Off by default; get a key at console.anthropic.com. |
 | `aiClassifier.model` / `timeoutSeconds` | Anthropic model id (default `claude-haiku-4-5`) and how long to wait before falling back. Default 8s, clamped 2–30. |
+| `aiClassifier.requireTags` | Makes tagging mandatory instead of best-effort, see above. Off by default. |
 | `superProductivity.shoppingProjectId` | Shopping-item override project, see above. Blank = no override. |
 | `joplin.enabled` / `authToken` | Turns on sending notes to Joplin, see above. Needs the Web Clipper service on in Joplin (Tools → Options → Web Clipper). |
 | `joplin.notebookId` | Notebook to file notes under. Blank = Joplin's last-selected notebook. |
+| `joplin.defaultTagIds` | Tag(s) applied to every note. Used as-is while `requireTags` is off; used as the fallback when it's on but Claude didn't pick one. |
 | `outboxRetrySeconds` | Seconds between retry passes for queued tasks when SP was unreachable. Default 60, clamped 10–3600. |
 | `outboxMaxAttempts` | Give up on a queued task after this many failed attempts and move it to `outbox\failed\`. Default `0` = retry forever. |
 | `testEventPhrase` | Transcription that triggers "Test received" instead of a task. Default `Index webhook test event`. |

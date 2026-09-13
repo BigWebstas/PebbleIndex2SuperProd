@@ -32,15 +32,23 @@ public sealed class JoplinClient : IDisposable
         [JsonPropertyName("parent_id")]
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public string? ParentId { get; set; }
+
+        // Joplin's clipper API takes a comma-separated list of tag TITLES here (not ids) and
+        // creates any that don't already exist — passing an id creates a garbage tag literally
+        // named after that id, confirmed against a live Joplin instance.
+        [JsonPropertyName("tags")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? Tags { get; set; }
     }
 
-    public async Task CreateNoteAsync(string title, string body, CancellationToken ct = default)
+    public async Task CreateNoteAsync(string title, string body, IReadOnlyList<string>? tagTitles = null, CancellationToken ct = default)
     {
         var payload = new CreateNoteBody
         {
             Title = title,
             Body = body,
             ParentId = string.IsNullOrWhiteSpace(_config.NotebookId) ? null : _config.NotebookId.Trim(),
+            Tags = tagTitles is { Count: > 0 } ? string.Join(',', tagTitles) : null,
         };
 
         using var resp = await _http.PostAsJsonAsync($"notes?token={Uri.EscapeDataString(_config.AuthToken)}", payload, ct);
@@ -52,13 +60,20 @@ public sealed class JoplinClient : IDisposable
     }
 
     /// <summary>Notebooks (folders), for the tray's "Default notebook" picker.</summary>
-    public async Task<IReadOnlyList<SpNamedItem>> GetFoldersAsync(CancellationToken ct = default)
+    public Task<IReadOnlyList<SpNamedItem>> GetFoldersAsync(CancellationToken ct = default)
+        => GetNamedListAsync("folders", ct);
+
+    /// <summary>Existing Joplin tags, for the AI classifier and the tray's "Default tag" picker.</summary>
+    public Task<IReadOnlyList<SpNamedItem>> GetTagsAsync(CancellationToken ct = default)
+        => GetNamedListAsync("tags", ct);
+
+    private async Task<IReadOnlyList<SpNamedItem>> GetNamedListAsync(string path, CancellationToken ct)
     {
-        using var resp = await _http.GetAsync($"folders?token={Uri.EscapeDataString(_config.AuthToken)}", ct);
+        using var resp = await _http.GetAsync($"{path}?token={Uri.EscapeDataString(_config.AuthToken)}", ct);
         var body = await resp.Content.ReadAsStringAsync(ct);
 
         if (!resp.IsSuccessStatusCode)
-            throw new JoplinApiException($"Joplin returned HTTP {(int)resp.StatusCode} on GET /folders.");
+            throw new JoplinApiException($"Joplin returned HTTP {(int)resp.StatusCode} on GET /{path}.");
 
         var root = JsonSerializer.Deserialize<JsonElement>(body);
         var arr = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("items", out var items)
@@ -75,6 +90,29 @@ public sealed class JoplinClient : IDisposable
             list.Add(new SpNamedItem(id, string.IsNullOrWhiteSpace(title) ? id : title!));
         }
         return list;
+    }
+
+    /// <summary>Probe the Web Clipper service, then the token. Mirrors
+    /// <see cref="SuperProductivityClient.TestAsync"/>.</summary>
+    public async Task<string> TestAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            using var ping = await _http.GetAsync("ping", ct);
+            if (!ping.IsSuccessStatusCode)
+                throw new JoplinApiException($"Reached {_config.BaseUrl} but GET /ping returned HTTP {(int)ping.StatusCode}.");
+        }
+        catch (HttpRequestException)
+        {
+            throw new JoplinApiException($"Cannot reach {_config.BaseUrl}. Is Joplin running with " +
+                                          "the Web Clipper service enabled (Tools → Options → Web Clipper)?");
+        }
+
+        using var folders = await _http.GetAsync($"folders?token={Uri.EscapeDataString(_config.AuthToken)}", ct);
+        if (!folders.IsSuccessStatusCode)
+            throw new JoplinApiException($"Reached Joplin but the auth token was rejected (HTTP {(int)folders.StatusCode} on GET /folders).");
+
+        return $"OK — {_config.BaseUrl} reachable and token accepted (GET /folders {(int)folders.StatusCode})";
     }
 
     public void Dispose() => _http.Dispose();

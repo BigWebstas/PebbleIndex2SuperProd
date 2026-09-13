@@ -75,6 +75,11 @@ public sealed class AppConfig
         /// (the last notebook selected in the app).</summary>
         public string NotebookId { get; set; } = "";
 
+        /// <summary>Tag ids applied to every note sent to Joplin. Used as-is while
+        /// aiClassifier.requireTags is off; used as the fallback when it's on but the AI
+        /// didn't come back with a usable Joplin tag.</summary>
+        public List<string> DefaultTagIds { get; set; } = new();
+
         /// <summary>Seconds to wait for Joplin before giving up. Clamped 2–30.</summary>
         public int TimeoutSeconds { get; set; } = 8;
     }
@@ -101,6 +106,13 @@ public sealed class AppConfig
         /// <summary>Seconds to wait for Claude before giving up and using the static config.
         /// Clamped to 2–30.</summary>
         public int TimeoutSeconds { get; set; } = 8;
+
+        /// <summary>When true, the AI must pick at least one Super Productivity tag for every
+        /// task (falling back to superProductivity.tagIds only if it still can't), and at least
+        /// one Joplin tag for every item it flags as a note (falling back to joplin.defaultTagIds
+        /// only if it still can't). When false, the AI isn't asked to pick tags at all — every
+        /// task/note just gets the configured default tags.</summary>
+        public bool RequireTags { get; set; } = false;
     }
 
     public sealed class SuperProductivityConfig
@@ -200,6 +212,7 @@ public sealed class AppConfig
         Joplin.TimeoutSeconds = Math.Clamp(Joplin.TimeoutSeconds, 2, 30);
         if (string.IsNullOrWhiteSpace(Joplin.BaseUrl)) Joplin.BaseUrl = "http://127.0.0.1:41184";
         Joplin.BaseUrl = Joplin.BaseUrl.TrimEnd('/');
+        Joplin.DefaultTagIds ??= new List<string>();
         SuperProductivity ??= new SuperProductivityConfig();
         if (string.IsNullOrWhiteSpace(SuperProductivity.BaseUrl))
             SuperProductivity.BaseUrl = "http://127.0.0.1:3876";

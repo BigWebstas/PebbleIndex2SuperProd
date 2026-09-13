@@ -277,14 +277,42 @@ public sealed class WebhookServer : IAsyncDisposable
         {
             var projects = await sp.GetProjectsAsync(CancellationToken.None);
             var tags = await sp.GetTagsAsync(CancellationToken.None);
-            var result = await _classifier.ClassifyAsync(transcription, projects, tags, CancellationToken.None);
+
+            // Fetched whenever Joplin is enabled — needed both to let the AI pick a Joplin tag
+            // (only asked for while requireTags is on) and to resolve whichever ids end up
+            // applied (AI-picked or the static default) to the titles Joplin's API actually wants.
+            IReadOnlyList<SpNamedItem> joplinTags = Array.Empty<SpNamedItem>();
+            if (_config.Joplin.Enabled)
+            {
+                try
+                {
+                    using var joplin = new JoplinClient(_config.Joplin);
+                    joplinTags = await joplin.GetTagsAsync(CancellationToken.None);
+                }
+                catch (Exception ex) when (ex is JoplinApiException or HttpRequestException or TaskCanceledException)
+                {
+                    _log.Warn($"AI classify: couldn't load Joplin tags ({ex.Message}) — continuing without them");
+                }
+            }
+
+            var result = await _classifier.ClassifyAsync(transcription, projects, tags, joplinTags, CancellationToken.None);
             if (result is null) return null;
 
             if (result.ProjectId is not null) taskReq.ProjectId = result.ProjectId;
             if (result.TagIds.Count > 0) taskReq.TagIds = result.TagIds;
 
             if (result.IsNote && _config.Joplin.Enabled)
-                await SendToJoplinAsync(taskReq.Title, taskReq.Notes ?? transcription);
+            {
+                var joplinTagIds = result.JoplinTagIds.Count > 0 ? result.JoplinTagIds : _config.Joplin.DefaultTagIds;
+                // Joplin's /notes "tags" field wants titles, not ids — resolve against the list
+                // we just fetched. An id that no longer exists (stale config) is dropped silently.
+                var joplinTagTitles = joplinTagIds
+                    .Select(id => joplinTags.FirstOrDefault(t => t.Id == id)?.Title)
+                    .Where(title => title is not null)
+                    .Select(title => title!)
+                    .ToList();
+                await SendToJoplinAsync(taskReq.Title, taskReq.Notes ?? transcription, joplinTagTitles);
+            }
 
             if (!result.IsShopping) return null;
 
@@ -308,13 +336,13 @@ public sealed class WebhookServer : IAsyncDisposable
     /// Purely additive — the Super Productivity task is created either way, so any failure here
     /// is just logged and never surfaces to the webhook caller.
     /// </summary>
-    private async Task SendToJoplinAsync(string title, string body)
+    private async Task SendToJoplinAsync(string title, string body, IReadOnlyList<string>? tagTitles)
     {
         try
         {
             using var joplin = new JoplinClient(_config.Joplin);
-            await joplin.CreateNoteAsync(title, body, CancellationToken.None);
-            _log.Info($"Sent note to Joplin: \"{title}\"");
+            await joplin.CreateNoteAsync(title, body, tagTitles, CancellationToken.None);
+            _log.Info($"Sent note to Joplin: \"{title}\"" + (tagTitles is { Count: > 0 } ? $" [{string.Join(',', tagTitles)}]" : ""));
         }
         catch (Exception ex) when (ex is JoplinApiException or HttpRequestException or TaskCanceledException)
         {

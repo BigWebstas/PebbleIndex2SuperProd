@@ -37,9 +37,13 @@ public sealed class TrayController : IDisposable
     private SpHealth _spHealth = SpHealth.Unknown;
     private bool _healthCheckInFlight;
 
+    private SpHealth _joplinHealth = SpHealth.Unknown;
+    private bool _joplinHealthCheckInFlight;
+
     private IReadOnlyList<SpNamedItem> _projects = Array.Empty<SpNamedItem>();
     private IReadOnlyList<SpNamedItem> _tags = Array.Empty<SpNamedItem>();
     private IReadOnlyList<SpNamedItem> _notebooks = Array.Empty<SpNamedItem>();
+    private IReadOnlyList<SpNamedItem> _joplinTags = Array.Empty<SpNamedItem>();
 
     private static readonly (string Id, string Label)[] AiModels =
     [
@@ -70,7 +74,11 @@ public sealed class TrayController : IDisposable
         TrayIcon.SetIcons(Application.Current!, new TrayIcons { _tray });
 
         _healthTimer = new DispatcherTimer();
-        _healthTimer.Tick += async (_, _) => await RunHealthCheckAsync(manual: false);
+        _healthTimer.Tick += async (_, _) =>
+        {
+            await RunHealthCheckAsync(manual: false);
+            await RunJoplinHealthCheckAsync(manual: false);
+        };
         ConfigureHealthTimer();
 
         _outboxTimer = new DispatcherTimer();
@@ -173,7 +181,20 @@ public sealed class TrayController : IDisposable
             SpHealth.Unreachable => "SP unreachable",
             _ => "SP not checked yet",
         };
-        return $"Listening on {_config.ListenAddress}:{_config.Port}{_config.WebhookPath}  ·  {sp}";
+        var line = $"Listening on {_config.ListenAddress}:{_config.Port}{_config.WebhookPath}  ·  {sp}";
+
+        if (!string.IsNullOrWhiteSpace(_config.Joplin.AuthToken))
+        {
+            var joplin = _joplinHealth switch
+            {
+                SpHealth.Ok => "Joplin reachable",
+                SpHealth.Unreachable => "Joplin unreachable",
+                _ => "Joplin not checked yet",
+            };
+            line += $"  ·  {joplin}";
+        }
+
+        return line;
     }
 
     private NativeMenu BuildProjectSubmenu()
@@ -263,6 +284,20 @@ public sealed class TrayController : IDisposable
             () => _ = SetApiKeyAsync()));
         m.Add(new NativeMenuItem("Model") { Menu = BuildAiModelSubmenu() });
         m.Add(new NativeMenuItem("Shopping project") { Menu = BuildShoppingProjectSubmenu() });
+        m.Add(new NativeMenuItemSeparator());
+
+        var requireTags = new NativeMenuItem("Require at least one tag")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = cfg.RequireTags,
+        };
+        requireTags.Click += (_, _) => ToggleRequireTags();
+        m.Add(requireTags);
+        m.Add(Disabled(cfg.RequireTags
+            ? "On: must pick an SP tag, and a Joplin tag for notes"
+            : "Off: every task/note just gets its default tags"));
+
+        m.Add(new NativeMenuItemSeparator());
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.ApiKey) ? "No API key set" : "API key is set"));
         return m;
     }
@@ -336,7 +371,44 @@ public sealed class TrayController : IDisposable
         m.Add(Action(string.IsNullOrWhiteSpace(cfg.AuthToken) ? "Set auth token…" : "Change auth token…",
             () => _ = SetJoplinTokenAsync()));
         m.Add(new NativeMenuItem("Default notebook") { Menu = BuildJoplinNotebookSubmenu() });
+        m.Add(new NativeMenuItem("Default tag") { Menu = BuildJoplinTagsSubmenu() });
+        m.Add(Action("Test Joplin connection", () => _ = RunJoplinHealthCheckAsync(manual: true)));
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.AuthToken) ? "No auth token set" : "Auth token is set"));
+        return m;
+    }
+
+    private NativeMenu BuildJoplinTagsSubmenu()
+    {
+        var m = new NativeMenu();
+        var selected = new HashSet<string>(_config.Joplin.DefaultTagIds ?? new List<string>(), StringComparer.Ordinal);
+
+        if (_joplinTags.Count == 0)
+        {
+            m.Add(new NativeMenuItem("(run “Refresh projects, tags & notebooks”)") { IsEnabled = false });
+            return m;
+        }
+
+        foreach (var t in _joplinTags.OrderBy(x => x.Title, StringComparer.OrdinalIgnoreCase))
+        {
+            var id = t.Id;
+            var title = t.Title;
+            var item = new NativeMenuItem(title)
+            {
+                ToggleType = NativeMenuItemToggleType.CheckBox,
+                IsChecked = selected.Contains(id),
+            };
+            item.Click += (_, _) => ToggleJoplinDefaultTag(id, title);
+            m.Add(item);
+        }
+
+        m.Add(new NativeMenuItemSeparator());
+        var clear = new NativeMenuItem("Clear all") { IsEnabled = selected.Count > 0 };
+        clear.Click += (_, _) =>
+        {
+            (_config.Joplin.DefaultTagIds ??= new List<string>()).Clear();
+            SaveConfig("cleared all Joplin default tags");
+        };
+        m.Add(clear);
         return m;
     }
 
@@ -390,6 +462,7 @@ public sealed class TrayController : IDisposable
             RefreshTray();
             if (!initial) Notify("Listener started", StatusLine(), NotifyKind.Info);
             _ = RunHealthCheckAsync(manual: false);
+            _ = RunJoplinHealthCheckAsync(manual: false);
             _ = RefreshListsAsync(notifyOnError: false);
         }
         catch (Exception ex)
@@ -445,6 +518,7 @@ public sealed class TrayController : IDisposable
             _config = AppConfig.LoadOrCreate(_configPath);
             _log.Info("Config reloaded");
             _spHealth = SpHealth.Unknown;
+            _joplinHealth = SpHealth.Unknown;
             _captureTag = new CaptureTagResolver(_config.SuperProductivity, _log);
             _classifier = new AiTaskClassifier(_config.AiClassifier, _log);
             ConfigureHealthTimer();
@@ -510,6 +584,61 @@ public sealed class TrayController : IDisposable
         }
     }
 
+    /// <summary>Only runs when an auth token is configured — with none set there's nothing
+    /// useful to probe, and Joplin may not even be installed.</summary>
+    private async Task RunJoplinHealthCheckAsync(bool manual)
+    {
+        if (string.IsNullOrWhiteSpace(_config.Joplin.AuthToken))
+        {
+            if (manual) Notify("Joplin", "No auth token set — nothing to test.", NotifyKind.Error, force: true);
+            return;
+        }
+        if (!manual && _joplinHealthCheckInFlight) return;
+        _joplinHealthCheckInFlight = true;
+        try
+        {
+            SpHealth state;
+            string message;
+            try
+            {
+                using var joplin = new JoplinClient(_config.Joplin);
+                message = await joplin.TestAsync();
+                state = SpHealth.Ok;
+            }
+            catch (Exception ex)
+            {
+                message = ex.Message;
+                state = SpHealth.Unreachable;
+            }
+
+            var prev = _joplinHealth;
+            _joplinHealth = state;
+
+            if (state != prev)
+            {
+                if (state == SpHealth.Ok)
+                    _log.Info(prev == SpHealth.Unreachable
+                        ? $"Joplin connection restored — {message}"
+                        : $"Joplin reachable — {message}");
+                else
+                    _log.Warn($"Joplin unreachable — {message}");
+
+                if (!manual && state == SpHealth.Unreachable && prev != SpHealth.Unreachable)
+                    Notify("Joplin unreachable", message, NotifyKind.Warning);
+
+                RefreshTray();
+            }
+
+            if (manual)
+                Notify(state == SpHealth.Ok ? "Joplin" : "Joplin — not reachable",
+                    message, state == SpHealth.Ok ? NotifyKind.Info : NotifyKind.Error, force: true);
+        }
+        finally
+        {
+            _joplinHealthCheckInFlight = false;
+        }
+    }
+
     // ---- outbox retry ----------------------------------------------
 
     private async Task FlushOutboxAsync()
@@ -560,11 +689,12 @@ public sealed class TrayController : IDisposable
             {
                 using var joplin = new JoplinClient(_config.Joplin);
                 _notebooks = await joplin.GetFoldersAsync();
+                _joplinTags = await joplin.GetTagsAsync();
             }
             catch (Exception ex) when (ex is JoplinApiException or HttpRequestException or TaskCanceledException)
             {
-                _log.Warn($"Couldn't load Joplin notebooks: {ex.Message}");
-                if (notifyOnError) Notify("Couldn't load Joplin notebooks", ex.Message, NotifyKind.Error);
+                _log.Warn($"Couldn't load Joplin notebooks/tags: {ex.Message}");
+                if (notifyOnError) Notify("Couldn't load Joplin notebooks/tags", ex.Message, NotifyKind.Error);
             }
         }
 
@@ -640,6 +770,13 @@ public sealed class TrayController : IDisposable
         SaveConfig($"AI classifier model = {label}");
     }
 
+    private void ToggleRequireTags()
+    {
+        var cfg = _config.AiClassifier;
+        cfg.RequireTags = !cfg.RequireTags;
+        SaveConfig($"AI classifier require-at-least-one-tag {(cfg.RequireTags ? "enabled" : "disabled")}");
+    }
+
     private void ToggleJoplinEnabled()
     {
         var cfg = _config.Joplin;
@@ -662,6 +799,14 @@ public sealed class TrayController : IDisposable
     {
         _config.Joplin.NotebookId = id;
         SaveConfig(id.Length == 0 ? "Joplin default notebook cleared" : $"Joplin default notebook = \"{label}\" [{id}]");
+    }
+
+    private void ToggleJoplinDefaultTag(string id, string label)
+    {
+        var tagIds = _config.Joplin.DefaultTagIds ??= new List<string>();
+        var removed = tagIds.Remove(id);
+        if (!removed) tagIds.Add(id);
+        SaveConfig(removed ? $"removed Joplin default tag \"{label}\"" : $"added Joplin default tag \"{label}\"");
     }
 
     private void SaveConfig(string what)
