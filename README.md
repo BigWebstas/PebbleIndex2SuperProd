@@ -181,6 +181,25 @@ bash scripts/package-linux.sh 1.2.1
 CI builds every push and PR. Pushing a `v*` tag publishes a GitHub Release with
 all artifacts attached.
 
+## Crash reporting and outage alerts
+
+Two global hooks catch what per-feature error handling can't. Most bugs would
+run on the UI thread (timer ticks, menu rebuilds) and can't be caught by an
+ordinary `try`/`catch` — an uncaught one there used to take the whole app down
+silently. Now it's logged, a Super Productivity task is created with the
+error and stack trace, and **the app keeps running**. A second hook catches
+anything outside the UI thread as a backstop; that one can't prevent the
+process from terminating, but still gets the crash logged and a best-effort
+task out first. Neither restarts a fully crashed process — that needs OS-level
+supervision (a systemd unit, a Scheduled Task), which isn't set up here.
+
+The same background health checks that drive the tray status line (Super
+Productivity, and Joplin/Google Calendar/Beeper whenever they're configured)
+also create a Super Productivity task the moment one of them goes from
+reachable (or not-yet-checked) to unreachable — once per outage, not on every
+repeat check while it stays down. If Super Productivity itself is the one
+that's down, that attempt just fails and logs, same as any other outage.
+
 ## Limitations
 
 - Audio-only webhooks are rejected (422) — no text to name a task.

@@ -6,6 +6,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
+using Avalonia.Threading;
 
 namespace Index2SP;
 
@@ -38,6 +39,27 @@ public partial class App : Application
                 log.Error("Failed to read config.json — starting with defaults", ex);
                 config = new AppConfig();
             }
+
+            // Fault tolerance: an uncaught exception here would otherwise take the whole app
+            // down silently (dispatcher-driven async-void handlers — timer ticks, menu rebuilds
+            // — can't be caught by an ordinary try/catch at the call site). This hook logs it,
+            // best-effort reports it as a Super Productivity task, and keeps the app running.
+            Dispatcher.UIThread.UnhandledException += (_, e) =>
+            {
+                CrashReporter.ReportRecovered(config, log, e.Exception, "the UI thread");
+                e.Handled = true;
+            };
+
+            // Backstop for anything outside the dispatcher (a genuinely fatal error). The
+            // process is terminating either way — this can't prevent that — but still gets the
+            // crash logged and a best-effort SP task out before the process dies.
+            AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            {
+                if (e.ExceptionObject is Exception ex2)
+                    CrashReporter.ReportFatal(config, log, ex2, "the app domain");
+                else
+                    log.Error($"Unhandled non-Exception object thrown: {e.ExceptionObject}");
+            };
 
             _tray = new TrayController(desktop, config, AppConfig.DefaultPath, log);
 

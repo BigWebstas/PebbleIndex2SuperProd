@@ -693,7 +693,10 @@ public sealed class TrayController : IDisposable
                     _log.Warn($"Super Productivity unreachable — {message}");
 
                 if (!manual && state == SpHealth.Unreachable && prev != SpHealth.Unreachable)
+                {
                     Notify("Super Productivity unreachable", message, NotifyKind.Warning);
+                    _ = CreateOutageTaskAsync("Super Productivity", message);
+                }
 
                 RefreshTray();
             }
@@ -748,7 +751,10 @@ public sealed class TrayController : IDisposable
                     _log.Warn($"Joplin unreachable — {message}");
 
                 if (!manual && state == SpHealth.Unreachable && prev != SpHealth.Unreachable)
+                {
                     Notify("Joplin unreachable", message, NotifyKind.Warning);
+                    _ = CreateOutageTaskAsync("Joplin", message);
+                }
 
                 RefreshTray();
             }
@@ -802,7 +808,10 @@ public sealed class TrayController : IDisposable
                     _log.Warn($"Google Calendar unreachable — {message}");
 
                 if (!manual && state == SpHealth.Unreachable && prev != SpHealth.Unreachable)
+                {
                     Notify("Google Calendar unreachable", message, NotifyKind.Warning);
+                    _ = CreateOutageTaskAsync("Google Calendar", message);
+                }
 
                 RefreshTray();
             }
@@ -856,7 +865,10 @@ public sealed class TrayController : IDisposable
                     _log.Warn($"Beeper unreachable — {message}");
 
                 if (!manual && state == SpHealth.Unreachable && prev != SpHealth.Unreachable)
+                {
                     Notify("Beeper unreachable", message, NotifyKind.Warning);
+                    _ = CreateOutageTaskAsync("Beeper", message);
+                }
 
                 RefreshTray();
             }
@@ -911,6 +923,31 @@ public sealed class TrayController : IDisposable
         SpHealth.Unreachable => "unreachable",
         _ => "not checked",
     };
+
+    /// <summary>
+    /// Best-effort Super Productivity task for a destination going down, fired once per
+    /// reachable/unknown → unreachable transition (not on every recheck while it stays down).
+    /// If Super Productivity itself is the one that's unreachable, this attempt simply fails and
+    /// logs — same as any other outage — there's no special-casing needed.
+    /// </summary>
+    private async Task CreateOutageTaskAsync(string name, string message)
+    {
+        try
+        {
+            var task = new SpTaskRequest
+            {
+                Title = $"Index2SP: {name} unreachable",
+                Notes = $"Time: {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}\n\n{message}",
+            };
+            using var sp = new SuperProductivityClient(_config.SuperProductivity);
+            var result = await sp.CreateTaskAsync(task, CancellationToken.None);
+            _log.Info($"Outage task created in Super Productivity{(result.TaskId is null ? "" : $" ({result.TaskId})")} for {name}");
+        }
+        catch (Exception ex) when (ex is SpApiException or HttpRequestException or TaskCanceledException)
+        {
+            _log.Warn($"Could not create outage task for \"{name} unreachable\": {ex.Message}");
+        }
+    }
 
     // ---- outbox retry ----------------------------------------------
 

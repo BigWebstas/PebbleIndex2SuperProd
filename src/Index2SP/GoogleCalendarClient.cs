@@ -120,7 +120,10 @@ public sealed class GoogleCalendarClient : IDisposable
         var token = await GetAccessTokenAsync(ct);
         var calendarId = string.IsNullOrWhiteSpace(_config.CalendarId) ? "primary" : _config.CalendarId.Trim();
 
-        using var req = new HttpRequestMessage(HttpMethod.Get, $"{ApiBase}calendars/{Uri.EscapeDataString(calendarId)}");
+        // Calendars.get (GET /calendars/{id}) needs the full calendar/calendar.readonly scope —
+        // ours is calendar.events + calendar.calendarlist.readonly, which only covers the
+        // CalendarList resource. Use CalendarList.get instead; same validation, no extra scope.
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"{ApiBase}users/me/calendarList/{Uri.EscapeDataString(calendarId)}");
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         using var resp = await _http.SendAsync(req, ct);
         if (!resp.IsSuccessStatusCode)
