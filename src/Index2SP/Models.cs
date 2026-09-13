@@ -47,6 +47,23 @@ public sealed class SpTaskRequest
     [JsonPropertyName("tagIds")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<string>? TagIds { get; set; }
+
+    /// <summary>Date-only due date ("yyyy-MM-dd"), for an all-day item. Mutually exclusive with
+    /// <see cref="DueWithTime"/> in practice — set one or the other, not both.</summary>
+    [JsonPropertyName("dueDay")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DueDay { get; set; }
+
+    /// <summary>Due date/time as Unix epoch milliseconds (UTC), for a specifically-timed item.</summary>
+    [JsonPropertyName("dueWithTime")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? DueWithTime { get; set; }
+
+    /// <summary>Required alongside <see cref="DueWithTime"/> — Super Productivity's own tasks
+    /// carry this whenever a specific time (not just a date) is set.</summary>
+    [JsonPropertyName("hasPlannedTime")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? HasPlannedTime { get; set; }
 }
 
 /// <summary>Standard Super Productivity response envelope: { ok, data?, error? }.</summary>

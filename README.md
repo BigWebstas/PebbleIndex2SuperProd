@@ -17,7 +17,8 @@ plus capture metadata go in the notes. A configured project, tags, and a
 Optionally, Claude reads each transcription and decides where it actually
 belongs — see [AI classification](#ai-classification) below for what that adds
 (smarter project/tag picks, splitting a shopping list into one task per item,
-and saving notes to Joplin).
+saving notes to Joplin, adding dated/timed items to Google Calendar, and
+sending chat messages through Beeper).
 
 If Super Productivity is unreachable when a note arrives, the task is written to
 a disk-backed **outbox** (`%APPDATA%\Index2SP\outbox\`) and retried in the
@@ -71,6 +72,22 @@ decides, per task:
   becomes three separate tasks (`bread`, `milk`, `eggs`), each stripped down to
   just the item. If `superProductivity.shoppingProjectId` is set, all of them
   go there instead of wherever Claude would otherwise file them.
+- **Dates and times** — "dinner with parents on the 18th at 5pm" sets the due
+  date/time on the Super Productivity task itself (always, whether or not
+  Google Calendar is set up), resolved against when the note was recorded
+  ("the 18th" always means the next upcoming 18th). A bare date with no time
+  ("mom's birthday is the 20th") sets a date-only due day. When
+  `googleCalendar.enabled` is also on, the same date/time also creates an
+  event on Google Calendar — additive, never a replacement for the task.
+- **Sending a message** — "send a message to Abbie say hello" sends "hello" to
+  Abbie right away through [Beeper](https://www.beeper.com/) when
+  `beeper.enabled` is on, over whatever network (Telegram, WhatsApp, iMessage,
+  etc.) that chat already uses. **This sends immediately, with no confirmation
+  step** — a misheard name or garbled transcription reaches the other person
+  before you see it. To limit damage from a bad match, it only sends when the
+  recipient name matches **exactly one** existing single-person chat; zero or
+  multiple matches are logged and skipped, never guessed. The Super
+  Productivity task is still created either way.
 
 Any failure — no/bad API key, network, timeout, a malformed reply — falls back
 to the static config from the table below. A task is always created either way.
@@ -84,14 +101,45 @@ every note, falling back to `superProductivity.tagIds` / `joplin.defaultTagIds`
 only if it still can't. With it off, Joplin notes skip AI tagging entirely and
 just get `joplin.defaultTagIds`.
 
+### Connecting Google Calendar
+
+Unlike Super Productivity and Joplin, Google Calendar needs a one-time OAuth
+sign-in — there's no local API key to paste in.
+
+1. In [Google Cloud Console](https://console.cloud.google.com/), create (or
+   pick) a project, enable the **Google Calendar API**, then create an OAuth
+   client under **APIs & Services → Credentials** with type **Desktop app**.
+2. Copy its client ID and secret into the tray: **Google Calendar → Set client
+   ID…** / **Set client secret…**.
+3. **Google Calendar → Connect…** opens your browser to Google's consent
+   screen and starts a temporary local listener to catch the redirect — sign
+   in, and the tray shows "Google Calendar connected". The refresh token it
+   receives is stored in `config.json`; **Disconnect** clears it.
+4. Turn on **Google Calendar → Enabled**, and optionally pick a non-default
+   calendar under **Default calendar**.
+
+### Connecting Beeper
+
+Beeper Desktop exposes a local API (`http://127.0.0.1:23373`) with its own
+personal access tokens — no OAuth flow needed.
+
+1. In Beeper Desktop's settings, find the API/developer access section and
+   create a token with read + write scope.
+2. Paste it into the tray: **Beeper messages → Set API token…**.
+3. Turn on **Beeper messages → Enabled**.
+
+Read the "Sending a message" note in [AI classification](#ai-classification)
+above before turning this on — it sends immediately, with no review step.
+
 ## Configure
 
 First run writes `config.json` to `%APPDATA%\Index2SP\` (Windows) or
 `~/.config/Index2SP/` (Linux). Edit it from the tray menu, then **Reload config**.
 Most settings also have a tray shortcut — default project, default tags, start
-at login, and (under **AI classifier** / **Joplin notes**) the enabled toggles,
-API key / auth token prompts, model picker, shopping project, require-at-least-
-one-tag, default notebook, and default tag. See
+at login, and (under **AI classifier** / **Joplin notes** / **Google
+Calendar** / **Beeper messages**) the enabled toggles, API key / auth token /
+OAuth client prompts, model picker, shopping project, require-at-least-one-tag,
+default notebook, default tag, and default calendar. See
 [`config.example.json`](config.example.json) for every field; the ones that matter:
 
 | Field | Meaning |
@@ -108,6 +156,10 @@ one-tag, default notebook, and default tag. See
 | `joplin.enabled` / `authToken` | Turns on sending notes to Joplin, see above. Needs the Web Clipper service on in Joplin (Tools → Options → Web Clipper). |
 | `joplin.notebookId` | Notebook to file notes under. Blank = Joplin's last-selected notebook. |
 | `joplin.defaultTagIds` | Tag(s) applied to every note. Used as-is while `requireTags` is off; used as the fallback when it's on but Claude didn't pick one. |
+| `googleCalendar.enabled` / `clientId` / `clientSecret` | Turns on adding calendar events, see [Connecting Google Calendar](#connecting-google-calendar) above. Off by default. |
+| `googleCalendar.refreshToken` | Set by the tray's Connect… flow — don't hand-edit. Blank = not connected. |
+| `googleCalendar.calendarId` | Calendar to create events on. Default `primary` (the account's main calendar). |
+| `beeper.enabled` / `apiToken` | Turns on sending chat messages via Beeper, see [Connecting Beeper](#connecting-beeper) above. **Sends immediately, no confirmation step.** Off by default. |
 | `outboxRetrySeconds` | Seconds between retry passes for queued tasks when SP was unreachable. Default 60, clamped 10–3600. |
 | `outboxMaxAttempts` | Give up on a queued task after this many failed attempts and move it to `outbox\failed\`. Default `0` = retry forever. |
 | `testEventPhrase` | Transcription that triggers "Test received" instead of a task. Default `Index webhook test event`. |

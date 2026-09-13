@@ -54,6 +54,61 @@ public sealed class AppConfig
 
     public JoplinConfig Joplin { get; set; } = new();
 
+    public GoogleCalendarConfig GoogleCalendar { get; set; } = new();
+
+    public BeeperConfig Beeper { get; set; } = new();
+
+    /// <summary>
+    /// Optional: when the AI classifier decides a transcription is a request to message someone
+    /// ("send a message to Abbie say hello"), send it through Beeper Desktop's local API — which
+    /// reaches whatever network (Telegram, WhatsApp, iMessage, etc.) that chat already uses. The
+    /// Super Productivity task is still created either way — additive, never a replacement.
+    /// Never guesses between ambiguous or missing matches: if the recipient name doesn't match
+    /// exactly one existing single-person chat, nothing is sent and it's logged.
+    /// </summary>
+    public sealed class BeeperConfig
+    {
+        public bool Enabled { get; set; } = false;
+
+        /// <summary>Beeper Desktop's local API.</summary>
+        public string BaseUrl { get; set; } = "http://127.0.0.1:23373";
+
+        /// <summary>Personal access token created in Beeper Desktop's API/developer settings.
+        /// Needs read + write scope (search chats, send messages).</summary>
+        public string ApiToken { get; set; } = "";
+
+        /// <summary>Seconds to wait for Beeper before giving up. Clamped 2–30.</summary>
+        public int TimeoutSeconds { get; set; } = 8;
+    }
+
+    /// <summary>
+    /// Optional: when the AI classifier decides a transcription describes a dated/timed event
+    /// ("dinner with parents on the 18th at 5pm"), also create it on Google Calendar. The Super
+    /// Productivity task is still created either way — additive, never a replacement. Needs a
+    /// one-time interactive sign-in from the tray (Google Calendar → Connect…) after clientId /
+    /// clientSecret are set from a Google Cloud OAuth "Desktop app" client.
+    /// </summary>
+    public sealed class GoogleCalendarConfig
+    {
+        public bool Enabled { get; set; } = false;
+
+        /// <summary>OAuth client id from a Google Cloud "Desktop app" OAuth client
+        /// (console.cloud.google.com → APIs &amp; Services → Credentials).</summary>
+        public string ClientId { get; set; } = "";
+
+        /// <summary>OAuth client secret from the same credential.</summary>
+        public string ClientSecret { get; set; } = "";
+
+        /// <summary>Refresh token from the tray's Connect flow. Blank = not connected.</summary>
+        public string RefreshToken { get; set; } = "";
+
+        /// <summary>Calendar to create events on. "primary" = the account's main calendar.</summary>
+        public string CalendarId { get; set; } = "primary";
+
+        /// <summary>Seconds to wait for Google before giving up. Clamped 2–30.</summary>
+        public int TimeoutSeconds { get; set; } = 8;
+    }
+
     /// <summary>
     /// Optional: when the AI classifier decides a transcription is a note rather than an
     /// actionable task, also send a copy to Joplin via its Web Clipper API. The Super
@@ -213,6 +268,13 @@ public sealed class AppConfig
         if (string.IsNullOrWhiteSpace(Joplin.BaseUrl)) Joplin.BaseUrl = "http://127.0.0.1:41184";
         Joplin.BaseUrl = Joplin.BaseUrl.TrimEnd('/');
         Joplin.DefaultTagIds ??= new List<string>();
+        GoogleCalendar ??= new GoogleCalendarConfig();
+        GoogleCalendar.TimeoutSeconds = Math.Clamp(GoogleCalendar.TimeoutSeconds, 2, 30);
+        if (string.IsNullOrWhiteSpace(GoogleCalendar.CalendarId)) GoogleCalendar.CalendarId = "primary";
+        Beeper ??= new BeeperConfig();
+        Beeper.TimeoutSeconds = Math.Clamp(Beeper.TimeoutSeconds, 2, 30);
+        if (string.IsNullOrWhiteSpace(Beeper.BaseUrl)) Beeper.BaseUrl = "http://127.0.0.1:23373";
+        Beeper.BaseUrl = Beeper.BaseUrl.TrimEnd('/');
         SuperProductivity ??= new SuperProductivityConfig();
         if (string.IsNullOrWhiteSpace(SuperProductivity.BaseUrl))
             SuperProductivity.BaseUrl = "http://127.0.0.1:3876";

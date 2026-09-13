@@ -40,10 +40,17 @@ public sealed class TrayController : IDisposable
     private SpHealth _joplinHealth = SpHealth.Unknown;
     private bool _joplinHealthCheckInFlight;
 
+    private SpHealth _googleHealth = SpHealth.Unknown;
+    private bool _googleHealthCheckInFlight;
+
+    private SpHealth _beeperHealth = SpHealth.Unknown;
+    private bool _beeperHealthCheckInFlight;
+
     private IReadOnlyList<SpNamedItem> _projects = Array.Empty<SpNamedItem>();
     private IReadOnlyList<SpNamedItem> _tags = Array.Empty<SpNamedItem>();
     private IReadOnlyList<SpNamedItem> _notebooks = Array.Empty<SpNamedItem>();
     private IReadOnlyList<SpNamedItem> _joplinTags = Array.Empty<SpNamedItem>();
+    private IReadOnlyList<SpNamedItem> _calendars = Array.Empty<SpNamedItem>();
 
     private static readonly (string Id, string Label)[] AiModels =
     [
@@ -78,6 +85,8 @@ public sealed class TrayController : IDisposable
         {
             await RunHealthCheckAsync(manual: false);
             await RunJoplinHealthCheckAsync(manual: false);
+            await RunGoogleCalendarHealthCheckAsync(manual: false);
+            await RunBeeperHealthCheckAsync(manual: false);
         };
         ConfigureHealthTimer();
 
@@ -139,6 +148,8 @@ public sealed class TrayController : IDisposable
 
         menu.Add(new NativeMenuItem("AI classifier") { Menu = BuildAiClassifierSubmenu() });
         menu.Add(new NativeMenuItem("Joplin notes") { Menu = BuildJoplinSubmenu() });
+        menu.Add(new NativeMenuItem("Google Calendar") { Menu = BuildGoogleCalendarSubmenu() });
+        menu.Add(new NativeMenuItem("Beeper messages") { Menu = BuildBeeperSubmenu() });
         menu.Add(new NativeMenuItemSeparator());
 
         menu.Add(Action("Edit config…", OpenConfig));
@@ -192,6 +203,28 @@ public sealed class TrayController : IDisposable
                 _ => "Joplin not checked yet",
             };
             line += $"  ·  {joplin}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(_config.GoogleCalendar.RefreshToken))
+        {
+            var google = _googleHealth switch
+            {
+                SpHealth.Ok => "Calendar reachable",
+                SpHealth.Unreachable => "Calendar unreachable",
+                _ => "Calendar not checked yet",
+            };
+            line += $"  ·  {google}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(_config.Beeper.ApiToken))
+        {
+            var beeper = _beeperHealth switch
+            {
+                SpHealth.Ok => "Beeper reachable",
+                SpHealth.Unreachable => "Beeper unreachable",
+                _ => "Beeper not checked yet",
+            };
+            line += $"  ·  {beeper}";
         }
 
         return line;
@@ -447,6 +480,80 @@ public sealed class TrayController : IDisposable
         return m;
     }
 
+    private NativeMenu BuildGoogleCalendarSubmenu()
+    {
+        var m = new NativeMenu();
+        var cfg = _config.GoogleCalendar;
+        var connected = !string.IsNullOrWhiteSpace(cfg.RefreshToken);
+
+        var enabled = new NativeMenuItem("Enabled")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = cfg.Enabled,
+        };
+        enabled.Click += (_, _) => ToggleGoogleCalendarEnabled();
+        m.Add(enabled);
+
+        m.Add(Action(string.IsNullOrWhiteSpace(cfg.ClientId) ? "Set client ID…" : "Change client ID…",
+            () => _ = SetGoogleClientIdAsync()));
+        m.Add(Action(string.IsNullOrWhiteSpace(cfg.ClientSecret) ? "Set client secret…" : "Change client secret…",
+            () => _ = SetGoogleClientSecretAsync()));
+        m.Add(Action(connected ? "Reconnect…" : "Connect…", () => _ = ConnectGoogleCalendarAsync()));
+        if (connected)
+            m.Add(Action("Disconnect", DisconnectGoogleCalendar));
+        m.Add(new NativeMenuItem("Default calendar") { Menu = BuildGoogleCalendarPickerSubmenu() });
+        m.Add(Action("Test Google Calendar connection", () => _ = RunGoogleCalendarHealthCheckAsync(manual: true)));
+        m.Add(Disabled(connected ? "Connected" : "Not connected"));
+        return m;
+    }
+
+    private NativeMenu BuildGoogleCalendarPickerSubmenu()
+    {
+        var m = new NativeMenu();
+        var current = _config.GoogleCalendar.CalendarId;
+
+        if (_calendars.Count == 0)
+        {
+            m.Add(new NativeMenuItem("(run “Refresh projects, tags & notebooks” once connected)") { IsEnabled = false });
+            return m;
+        }
+
+        foreach (var c in _calendars.OrderBy(x => x.Title, StringComparer.OrdinalIgnoreCase))
+        {
+            var id = c.Id;
+            var title = c.Title;
+            var item = new NativeMenuItem(title)
+            {
+                ToggleType = NativeMenuItemToggleType.CheckBox,
+                IsChecked = id == current,
+            };
+            item.Click += (_, _) => SetGoogleCalendarId(id, title);
+            m.Add(item);
+        }
+        return m;
+    }
+
+    private NativeMenu BuildBeeperSubmenu()
+    {
+        var m = new NativeMenu();
+        var cfg = _config.Beeper;
+
+        var enabled = new NativeMenuItem("Enabled")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = cfg.Enabled,
+        };
+        enabled.Click += (_, _) => ToggleBeeperEnabled();
+        m.Add(enabled);
+
+        m.Add(Action(string.IsNullOrWhiteSpace(cfg.ApiToken) ? "Set API token…" : "Change API token…",
+            () => _ = SetBeeperTokenAsync()));
+        m.Add(Action("Test Beeper connection", () => _ = RunBeeperHealthCheckAsync(manual: true)));
+        m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.ApiToken) ? "No API token set" : "API token is set"));
+        m.Add(Disabled("Sends only when the recipient's name matches exactly one existing chat"));
+        return m;
+    }
+
     // ---- server lifecycle --------------------------------------------
 
     private async Task StartServerAsync(bool initial = false)
@@ -463,6 +570,8 @@ public sealed class TrayController : IDisposable
             if (!initial) Notify("Listener started", StatusLine(), NotifyKind.Info);
             _ = RunHealthCheckAsync(manual: false);
             _ = RunJoplinHealthCheckAsync(manual: false);
+            _ = RunGoogleCalendarHealthCheckAsync(manual: false);
+            _ = RunBeeperHealthCheckAsync(manual: false);
             _ = RefreshListsAsync(notifyOnError: false);
         }
         catch (Exception ex)
@@ -519,6 +628,8 @@ public sealed class TrayController : IDisposable
             _log.Info("Config reloaded");
             _spHealth = SpHealth.Unknown;
             _joplinHealth = SpHealth.Unknown;
+            _googleHealth = SpHealth.Unknown;
+            _beeperHealth = SpHealth.Unknown;
             _captureTag = new CaptureTagResolver(_config.SuperProductivity, _log);
             _classifier = new AiTaskClassifier(_config.AiClassifier, _log);
             ConfigureHealthTimer();
@@ -639,6 +750,114 @@ public sealed class TrayController : IDisposable
         }
     }
 
+    /// <summary>Only runs once connected — with no refresh token there's nothing to probe.</summary>
+    private async Task RunGoogleCalendarHealthCheckAsync(bool manual)
+    {
+        if (string.IsNullOrWhiteSpace(_config.GoogleCalendar.RefreshToken))
+        {
+            if (manual) Notify("Google Calendar", "Not connected — run Connect… first.", NotifyKind.Error, force: true);
+            return;
+        }
+        if (!manual && _googleHealthCheckInFlight) return;
+        _googleHealthCheckInFlight = true;
+        try
+        {
+            SpHealth state;
+            string message;
+            try
+            {
+                using var google = new GoogleCalendarClient(_config.GoogleCalendar);
+                message = await google.TestAsync();
+                state = SpHealth.Ok;
+            }
+            catch (Exception ex)
+            {
+                message = ex.Message;
+                state = SpHealth.Unreachable;
+            }
+
+            var prev = _googleHealth;
+            _googleHealth = state;
+
+            if (state != prev)
+            {
+                if (state == SpHealth.Ok)
+                    _log.Info(prev == SpHealth.Unreachable
+                        ? $"Google Calendar connection restored — {message}"
+                        : $"Google Calendar reachable — {message}");
+                else
+                    _log.Warn($"Google Calendar unreachable — {message}");
+
+                if (!manual && state == SpHealth.Unreachable && prev != SpHealth.Unreachable)
+                    Notify("Google Calendar unreachable", message, NotifyKind.Warning);
+
+                RefreshTray();
+            }
+
+            if (manual)
+                Notify(state == SpHealth.Ok ? "Google Calendar" : "Google Calendar — not reachable",
+                    message, state == SpHealth.Ok ? NotifyKind.Info : NotifyKind.Error, force: true);
+        }
+        finally
+        {
+            _googleHealthCheckInFlight = false;
+        }
+    }
+
+    /// <summary>Only runs when an API token is configured.</summary>
+    private async Task RunBeeperHealthCheckAsync(bool manual)
+    {
+        if (string.IsNullOrWhiteSpace(_config.Beeper.ApiToken))
+        {
+            if (manual) Notify("Beeper", "No API token set — nothing to test.", NotifyKind.Error, force: true);
+            return;
+        }
+        if (!manual && _beeperHealthCheckInFlight) return;
+        _beeperHealthCheckInFlight = true;
+        try
+        {
+            SpHealth state;
+            string message;
+            try
+            {
+                using var beeper = new BeeperClient(_config.Beeper);
+                message = await beeper.TestAsync();
+                state = SpHealth.Ok;
+            }
+            catch (Exception ex)
+            {
+                message = ex.Message;
+                state = SpHealth.Unreachable;
+            }
+
+            var prev = _beeperHealth;
+            _beeperHealth = state;
+
+            if (state != prev)
+            {
+                if (state == SpHealth.Ok)
+                    _log.Info(prev == SpHealth.Unreachable
+                        ? $"Beeper connection restored — {message}"
+                        : $"Beeper reachable — {message}");
+                else
+                    _log.Warn($"Beeper unreachable — {message}");
+
+                if (!manual && state == SpHealth.Unreachable && prev != SpHealth.Unreachable)
+                    Notify("Beeper unreachable", message, NotifyKind.Warning);
+
+                RefreshTray();
+            }
+
+            if (manual)
+                Notify(state == SpHealth.Ok ? "Beeper" : "Beeper — not reachable",
+                    message, state == SpHealth.Ok ? NotifyKind.Info : NotifyKind.Error, force: true);
+        }
+        finally
+        {
+            _beeperHealthCheckInFlight = false;
+        }
+    }
+
     // ---- outbox retry ----------------------------------------------
 
     private async Task FlushOutboxAsync()
@@ -695,6 +914,20 @@ public sealed class TrayController : IDisposable
             {
                 _log.Warn($"Couldn't load Joplin notebooks/tags: {ex.Message}");
                 if (notifyOnError) Notify("Couldn't load Joplin notebooks/tags", ex.Message, NotifyKind.Error);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(_config.GoogleCalendar.RefreshToken))
+        {
+            try
+            {
+                using var google = new GoogleCalendarClient(_config.GoogleCalendar);
+                _calendars = await google.GetCalendarsAsync();
+            }
+            catch (Exception ex) when (ex is GoogleCalendarApiException or HttpRequestException or TaskCanceledException)
+            {
+                _log.Warn($"Couldn't load Google calendars: {ex.Message}");
+                if (notifyOnError) Notify("Couldn't load Google calendars", ex.Message, NotifyKind.Error);
             }
         }
 
@@ -807,6 +1040,97 @@ public sealed class TrayController : IDisposable
         var removed = tagIds.Remove(id);
         if (!removed) tagIds.Add(id);
         SaveConfig(removed ? $"removed Joplin default tag \"{label}\"" : $"added Joplin default tag \"{label}\"");
+    }
+
+    // ---- Google Calendar ------------------------------------------
+
+    private void ToggleGoogleCalendarEnabled()
+    {
+        var cfg = _config.GoogleCalendar;
+        cfg.Enabled = !cfg.Enabled;
+        SaveConfig($"Google Calendar {(cfg.Enabled ? "enabled" : "disabled")}");
+    }
+
+    private async Task SetGoogleClientIdAsync()
+    {
+        var value = await InputDialog.ShowAsync("Google OAuth client ID",
+            "Paste the client ID from a Google Cloud \"Desktop app\" OAuth client\n" +
+            "(console.cloud.google.com → APIs & Services → Credentials).\n" +
+            "Leave blank to keep the current one.");
+        if (value is null || value.Trim().Length == 0) return;
+
+        _config.GoogleCalendar.ClientId = value.Trim();
+        SaveConfig("Google Calendar client ID updated");
+    }
+
+    private async Task SetGoogleClientSecretAsync()
+    {
+        var value = await InputDialog.ShowAsync("Google OAuth client secret",
+            "Paste the client secret from the same OAuth client.\nLeave blank to keep the current one.");
+        if (value is null || value.Trim().Length == 0) return;
+
+        _config.GoogleCalendar.ClientSecret = value.Trim();
+        SaveConfig("Google Calendar client secret updated");
+    }
+
+    private async Task ConnectGoogleCalendarAsync()
+    {
+        var cfg = _config.GoogleCalendar;
+        if (string.IsNullOrWhiteSpace(cfg.ClientId) || string.IsNullOrWhiteSpace(cfg.ClientSecret))
+        {
+            Notify("Google Calendar", "Set a client ID and client secret first.", NotifyKind.Error, force: true);
+            return;
+        }
+
+        Notify("Google Calendar", "Opening your browser to sign in…", NotifyKind.Info, force: true);
+        try
+        {
+            var result = await GoogleOAuthAuthorizer.AuthorizeAsync(cfg.ClientId, cfg.ClientSecret, CancellationToken.None);
+            cfg.RefreshToken = result.RefreshToken;
+            SaveConfig("Google Calendar connected");
+            Notify("Google Calendar connected", "You're signed in.", NotifyKind.Info, force: true);
+            _ = RefreshListsAsync(notifyOnError: false);
+        }
+        catch (Exception ex)
+        {
+            _log.Error("Google Calendar sign-in failed", ex);
+            Notify("Google Calendar sign-in failed", ex.Message, NotifyKind.Error, force: true);
+        }
+    }
+
+    private void DisconnectGoogleCalendar()
+    {
+        _config.GoogleCalendar.RefreshToken = "";
+        _googleHealth = SpHealth.Unknown;
+        _calendars = Array.Empty<SpNamedItem>();
+        SaveConfig("Google Calendar disconnected");
+        Notify("Google Calendar", "Disconnected.", NotifyKind.Info);
+    }
+
+    private void SetGoogleCalendarId(string id, string label)
+    {
+        _config.GoogleCalendar.CalendarId = id;
+        SaveConfig($"Google Calendar default calendar = \"{label}\" [{id}]");
+    }
+
+    // ---- Beeper -----------------------------------------------------
+
+    private void ToggleBeeperEnabled()
+    {
+        var cfg = _config.Beeper;
+        cfg.Enabled = !cfg.Enabled;
+        SaveConfig($"Beeper messages {(cfg.Enabled ? "enabled" : "disabled")}");
+    }
+
+    private async Task SetBeeperTokenAsync()
+    {
+        var value = await InputDialog.ShowAsync("Beeper API token",
+            "Paste a personal access token from Beeper Desktop's API/developer settings\n" +
+            "(needs read + write scope). Leave blank to keep the current one.");
+        if (value is null || value.Trim().Length == 0) return;
+
+        _config.Beeper.ApiToken = value.Trim();
+        SaveConfig("Beeper API token updated");
     }
 
     private void SaveConfig(string what)

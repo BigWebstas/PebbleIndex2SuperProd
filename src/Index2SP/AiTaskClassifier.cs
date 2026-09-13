@@ -25,16 +25,25 @@ public sealed class AiTaskClassifier
     }
 
     public sealed record Classification(
-        string? ProjectId, List<string> TagIds, bool IsNote, bool IsShopping, List<string> ShoppingItems, List<string> JoplinTagIds);
+        string? ProjectId, List<string> TagIds, bool IsNote, bool IsShopping, List<string> ShoppingItems, List<string> JoplinTagIds,
+        bool IsCalendarEvent, string? EventTitle, DateTimeOffset? EventStart, DateTimeOffset? EventEnd, bool EventAllDay,
+        bool IsMessage, string? MessageRecipient, string? MessageText);
 
     /// <param name="joplinTags">Existing Joplin tags, only consulted (and only asked of the AI)
     /// while <see cref="AppConfig.AiClassifierConfig.RequireTags"/> is on. Pass an empty list
     /// when Joplin isn't enabled.</param>
+    /// <param name="referenceTime">When the transcription was recorded, in local time — used so
+    /// the AI can resolve relative dates like "the 18th" or "next Tuesday" for both the Super
+    /// Productivity due date and (when enabled) the Google Calendar event.</param>
+    /// <param name="includeMessage">Whether to ask the AI to detect a "send a message to X" intent
+    /// at all — pass the caller's Beeper enabled flag.</param>
     public async Task<Classification?> ClassifyAsync(
         string transcription,
         IReadOnlyList<SpNamedItem> projects,
         IReadOnlyList<SpNamedItem> tags,
         IReadOnlyList<SpNamedItem> joplinTags,
+        DateTimeOffset referenceTime,
+        bool includeMessage,
         CancellationToken ct)
     {
         if (!_config.Enabled || string.IsNullOrWhiteSpace(_config.ApiKey)) return null;
@@ -51,9 +60,13 @@ public sealed class AiTaskClassifier
             var response = await client.Messages.Create(new MessageCreateParams
             {
                 Model = _config.Model,
-                MaxTokens = 256,
-                Messages = [new() { Role = Role.User, Content = BuildPrompt(transcription, projects, tags, joplinTags, requireTags) }],
-                Tools = [BuildClassifyTool(requireTags)],
+                MaxTokens = 320,
+                Messages = [new()
+                {
+                    Role = Role.User,
+                    Content = BuildPrompt(transcription, projects, tags, joplinTags, requireTags, referenceTime, includeMessage),
+                }],
+                Tools = [BuildClassifyTool(requireTags, includeMessage)],
                 ToolChoice = new ToolChoiceTool { Name = ClassifyToolName },
             }, cancellationToken: cts.Token);
 
@@ -72,14 +85,50 @@ public sealed class AiTaskClassifier
                 var shoppingItems = ReadStringArray(toolUse.Input, "shoppingItems");
                 var joplinTagIds = requireTags ? ReadStringArray(toolUse.Input, "joplinTagIds") : new List<string>();
 
+                var isCalendarEvent = toolUse.Input.TryGetValue("isCalendarEvent", out var ceEl) &&
+                                       ceEl.ValueKind == JsonValueKind.True;
+                var eventTitle = toolUse.Input.TryGetValue("eventTitle", out var etEl) &&
+                                  etEl.ValueKind == JsonValueKind.String
+                    ? etEl.GetString()
+                    : null;
+                var eventStart = ReadDateTimeOffset(toolUse.Input, "eventStart");
+                var eventEnd = ReadDateTimeOffset(toolUse.Input, "eventEnd");
+                var eventAllDay = toolUse.Input.TryGetValue("eventAllDay", out var adEl) &&
+                                   adEl.ValueKind == JsonValueKind.True;
+
+                // A calendar event needs at least a title and a start time to be usable.
+                if (isCalendarEvent && (eventTitle is null || eventStart is null))
+                    isCalendarEvent = false;
+
+                var isMessage = false;
+                string? messageRecipient = null;
+                string? messageText = null;
+                if (includeMessage)
+                {
+                    isMessage = toolUse.Input.TryGetValue("isMessage", out var imEl) && imEl.ValueKind == JsonValueKind.True;
+                    messageRecipient = toolUse.Input.TryGetValue("messageRecipient", out var mrEl) &&
+                                        mrEl.ValueKind == JsonValueKind.String
+                        ? mrEl.GetString()
+                        : null;
+                    messageText = toolUse.Input.TryGetValue("messageText", out var mtEl) && mtEl.ValueKind == JsonValueKind.String
+                        ? mtEl.GetString()
+                        : null;
+                    // A message needs both a recipient and something to say to be usable.
+                    if (isMessage && (string.IsNullOrWhiteSpace(messageRecipient) || string.IsNullOrWhiteSpace(messageText)))
+                        isMessage = false;
+                }
+
                 var resolvedProjectId = projectId is not null && projects.Any(p => p.Id == projectId) ? projectId : null;
                 var resolvedTagIds = tagIds.Where(t => tags.Any(x => x.Id == t)).ToList();
                 var resolvedJoplinTagIds = joplinTagIds.Where(t => joplinTags.Any(x => x.Id == t)).ToList();
 
                 _log.Info($"AI classify: project={resolvedProjectId ?? "(none)"}, tags=[{string.Join(',', resolvedTagIds)}], " +
                           $"isNote={isNote}, isShopping={isShopping}, shoppingItems=[{string.Join(',', shoppingItems)}], " +
-                          $"joplinTags=[{string.Join(',', resolvedJoplinTagIds)}]");
-                return new Classification(resolvedProjectId, resolvedTagIds, isNote, isShopping, shoppingItems, resolvedJoplinTagIds);
+                          $"joplinTags=[{string.Join(',', resolvedJoplinTagIds)}], isCalendarEvent={isCalendarEvent}" +
+                          (isCalendarEvent ? $", eventStart={eventStart:O}" : "") +
+                          $", isMessage={isMessage}" + (isMessage ? $", messageRecipient={messageRecipient}" : ""));
+                return new Classification(resolvedProjectId, resolvedTagIds, isNote, isShopping, shoppingItems, resolvedJoplinTagIds,
+                    isCalendarEvent, eventTitle, eventStart, eventEnd, eventAllDay, isMessage, messageRecipient, messageText);
             }
 
             _log.Warn("AI classify: response had no classify tool_use block");
@@ -90,6 +139,16 @@ public sealed class AiTaskClassifier
             _log.Warn($"AI classify failed, using static config instead: {ex.Message}");
             return null;
         }
+    }
+
+    private static DateTimeOffset? ReadDateTimeOffset(IReadOnlyDictionary<string, JsonElement> input, string key)
+    {
+        if (input.TryGetValue(key, out var el) && el.ValueKind == JsonValueKind.String &&
+            DateTimeOffset.TryParse(el.GetString(), null, System.Globalization.DateTimeStyles.None, out var dt))
+        {
+            return dt;
+        }
+        return null;
     }
 
     private static List<string> ReadStringArray(IReadOnlyDictionary<string, JsonElement> input, string key)
@@ -128,7 +187,7 @@ public sealed class AiTaskClassifier
         });
     }
 
-    private static Tool BuildClassifyTool(bool requireTags)
+    private static Tool BuildClassifyTool(bool requireTags, bool includeMessage)
     {
         var properties = new Dictionary<string, JsonElement>
         {
@@ -175,6 +234,67 @@ public sealed class AiTaskClassifier
             required.Add("joplinTagIds");
         }
 
+        properties["isCalendarEvent"] = JsonSerializer.SerializeToElement(new
+        {
+            type = "boolean",
+            description = "true if this describes something happening at a specific date/time — a " +
+                           "calendar event (e.g. \"dinner with parents on the 18th at 5pm\", \"doctor " +
+                           "appointment next Tuesday at 10am\") rather than an open-ended to-do.",
+        });
+        properties["eventTitle"] = JsonSerializer.SerializeToElement(new
+        {
+            type = new[] { "string", "null" },
+            description = "Required when isCalendarEvent is true: a short event title, e.g. " +
+                           "\"Dinner with parents\". Null otherwise.",
+        });
+        properties["eventStart"] = JsonSerializer.SerializeToElement(new
+        {
+            type = new[] { "string", "null" },
+            description = "Required when isCalendarEvent is true: the event's start date/time as ISO " +
+                           "8601 with a UTC offset, e.g. \"2026-09-18T17:00:00-06:00\" — resolve relative " +
+                           "dates (\"the 18th\", \"next Tuesday\") against the reference time given below. " +
+                           "Null otherwise.",
+        });
+        properties["eventEnd"] = JsonSerializer.SerializeToElement(new
+        {
+            type = new[] { "string", "null" },
+            description = "Only if an explicit end time or duration was mentioned, same ISO 8601 format " +
+                           "as eventStart. Null otherwise — a 1-hour default is used.",
+        });
+        properties["eventAllDay"] = JsonSerializer.SerializeToElement(new
+        {
+            type = "boolean",
+            description = "true only when isCalendarEvent is true and no specific time was given — just " +
+                           "a date (e.g. \"mom's birthday is the 20th\"). Otherwise false.",
+        });
+        required.AddRange(["isCalendarEvent", "eventTitle", "eventStart", "eventEnd", "eventAllDay"]);
+
+        if (includeMessage)
+        {
+            properties["isMessage"] = JsonSerializer.SerializeToElement(new
+            {
+                type = "boolean",
+                description = "true if this is a request to send a chat message to a specific person — " +
+                               "e.g. \"send a message to Abbie say hello\", \"tell Abbie I'll be late\", " +
+                               "\"text Abbie hello\". False for anything else, including messages the user " +
+                               "is just describing or recalling rather than asking to send right now.",
+            });
+            properties["messageRecipient"] = JsonSerializer.SerializeToElement(new
+            {
+                type = new[] { "string", "null" },
+                description = "Required when isMessage is true: just the recipient's name, e.g. \"Abbie\" " +
+                               "from \"send a message to Abbie say hello\". Null otherwise.",
+            });
+            properties["messageText"] = JsonSerializer.SerializeToElement(new
+            {
+                type = new[] { "string", "null" },
+                description = "Required when isMessage is true: just the message content to send, stripped " +
+                               "of phrasing like \"send a message to X say\" or \"tell X\" — e.g. \"hello\" " +
+                               "from \"send a message to Abbie say hello\". Null otherwise.",
+            });
+            required.AddRange(["isMessage", "messageRecipient", "messageText"]);
+        }
+
         return new Tool
         {
             Name = ClassifyToolName,
@@ -185,7 +305,7 @@ public sealed class AiTaskClassifier
 
     private static string BuildPrompt(
         string transcription, IReadOnlyList<SpNamedItem> projects, IReadOnlyList<SpNamedItem> tags,
-        IReadOnlyList<SpNamedItem> joplinTags, bool requireTags)
+        IReadOnlyList<SpNamedItem> joplinTags, bool requireTags, DateTimeOffset referenceTime, bool includeMessage)
     {
         var sb = new StringBuilder();
         sb.Append("You are filing a voice-note transcription into Super Productivity. ");
@@ -209,6 +329,18 @@ public sealed class AiTaskClassifier
         if (requireTags)
             sb.Append("When isNote is true, you must also pick at least one tag for joplinTagIds from the " +
                       "Joplin tags list below — the closest fit if nothing is perfect. Use [] when isNote is false.\n");
+
+        sb.Append("Also decide whether this describes a calendar event — something happening at a specific ");
+        sb.Append("date/time — and set isCalendarEvent, eventTitle, eventStart, eventEnd, and eventAllDay ");
+        sb.Append("accordingly (see their descriptions); this also sets the due date on the Super Productivity ");
+        sb.Append("task itself. Right now it is ");
+        sb.Append(referenceTime.ToString("yyyy-MM-dd HH:mm zzz")).Append(" (").Append(referenceTime.ToString("dddd"));
+        sb.Append(") — resolve relative dates like \"the 18th\", \"tomorrow\", or \"next Tuesday\" against this.\n");
+
+        if (includeMessage)
+            sb.Append("Also decide whether this is a request to send a chat message to someone right now " +
+                      "(e.g. \"send a message to Abbie say hello\", \"tell Abbie I'll be late\") and set " +
+                      "isMessage, messageRecipient, and messageText accordingly (see their descriptions).\n");
 
         sb.Append('\n');
         sb.Append("Projects:\n");

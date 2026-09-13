@@ -184,7 +184,7 @@ public sealed class WebhookServer : IAsyncDisposable
         // HTTP client's own 15 s timeout bounds the call.
         List<string>? shoppingItems = null;
         if (_config.AiClassifier.Enabled)
-            shoppingItems = await ApplyAiClassificationAsync(sp, taskReq, payload.Transcription!);
+            shoppingItems = await ApplyAiClassificationAsync(sp, taskReq, payload.Transcription!, payload.RecordedAt);
         await _captureTag.ApplyAsync(sp, taskReq, CancellationToken.None);
 
         if (shoppingItems is { Count: > 0 })
@@ -271,7 +271,8 @@ public sealed class WebhookServer : IAsyncDisposable
     /// Returns the bare shopping items to split into separate tasks, or null when this isn't a
     /// multi-item shopping capture (the caller then uses taskReq as-is, title included).
     /// </summary>
-    private async Task<List<string>?> ApplyAiClassificationAsync(SuperProductivityClient sp, SpTaskRequest taskReq, string transcription)
+    private async Task<List<string>?> ApplyAiClassificationAsync(
+        SuperProductivityClient sp, SpTaskRequest taskReq, string transcription, DateTimeOffset? recordedAt)
     {
         try
         {
@@ -295,7 +296,9 @@ public sealed class WebhookServer : IAsyncDisposable
                 }
             }
 
-            var result = await _classifier.ClassifyAsync(transcription, projects, tags, joplinTags, CancellationToken.None);
+            var referenceTime = (recordedAt ?? DateTimeOffset.UtcNow).ToLocalTime();
+            var result = await _classifier.ClassifyAsync(
+                transcription, projects, tags, joplinTags, referenceTime, _config.Beeper.Enabled, CancellationToken.None);
             if (result is null) return null;
 
             if (result.ProjectId is not null) taskReq.ProjectId = result.ProjectId;
@@ -313,6 +316,31 @@ public sealed class WebhookServer : IAsyncDisposable
                     .ToList();
                 await SendToJoplinAsync(taskReq.Title, taskReq.Notes ?? transcription, joplinTagTitles);
             }
+
+            if (result.IsCalendarEvent && result.EventStart is not null)
+            {
+                // Sets the SP task's own due date regardless of Google Calendar — the calendar
+                // event (below) is a separate, additive destination gated on its own toggle.
+                if (result.EventAllDay)
+                {
+                    taskReq.DueDay = result.EventStart.Value.ToString("yyyy-MM-dd");
+                }
+                else
+                {
+                    taskReq.DueWithTime = result.EventStart.Value.ToUnixTimeMilliseconds();
+                    taskReq.HasPlannedTime = true;
+                }
+
+                if (_config.GoogleCalendar.Enabled)
+                {
+                    await CreateCalendarEventAsync(
+                        result.EventTitle ?? taskReq.Title, taskReq.Notes ?? transcription,
+                        result.EventStart.Value, result.EventEnd, result.EventAllDay);
+                }
+            }
+
+            if (result.IsMessage && _config.Beeper.Enabled && result.MessageRecipient is not null && result.MessageText is not null)
+                await SendBeeperMessageAsync(result.MessageRecipient, result.MessageText);
 
             if (!result.IsShopping) return null;
 
@@ -347,6 +375,61 @@ public sealed class WebhookServer : IAsyncDisposable
         catch (Exception ex) when (ex is JoplinApiException or HttpRequestException or TaskCanceledException)
         {
             _log.Warn($"Could not send note to Joplin (task was still created): {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Best-effort calendar event for transcriptions the classifier marked as dated/timed.
+    /// Purely additive — the Super Productivity task is created either way, so any failure here
+    /// is just logged and never surfaces to the webhook caller.
+    /// </summary>
+    private async Task CreateCalendarEventAsync(string title, string description, DateTimeOffset start, DateTimeOffset? end, bool allDay)
+    {
+        try
+        {
+            using var calendar = new GoogleCalendarClient(_config.GoogleCalendar);
+            await calendar.CreateEventAsync(title, description, start, end, allDay, CancellationToken.None);
+            _log.Info($"Created Google Calendar event: \"{title}\" at {start:yyyy-MM-dd HH:mm zzz}" + (allDay ? " (all day)" : ""));
+        }
+        catch (Exception ex) when (ex is GoogleCalendarApiException or HttpRequestException or TaskCanceledException)
+        {
+            _log.Warn($"Could not create Google Calendar event (task was still created): {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Best-effort chat message via Beeper Desktop, to whichever network (Telegram, WhatsApp,
+    /// iMessage, etc.) the recipient's chat already uses. Purely additive — the Super
+    /// Productivity task is created either way. Never guesses: sends only when the recipient
+    /// name matches exactly one existing single-person chat, to avoid messaging the wrong
+    /// person on an ambiguous or missing match.
+    /// </summary>
+    private async Task SendBeeperMessageAsync(string recipient, string text)
+    {
+        try
+        {
+            using var beeper = new BeeperClient(_config.Beeper);
+            var matches = await beeper.SearchSingleChatsAsync(recipient, CancellationToken.None);
+
+            if (matches.Count == 0)
+            {
+                _log.Warn($"Beeper message skipped: no chat found matching \"{recipient}\"");
+                return;
+            }
+            if (matches.Count > 1)
+            {
+                _log.Warn($"Beeper message skipped: \"{recipient}\" matches {matches.Count} chats " +
+                          $"({string.Join(", ", matches.Select(m => $"{m.Title} [{m.Network}]"))}) — ambiguous, not sending");
+                return;
+            }
+
+            var chat = matches[0];
+            await beeper.SendMessageAsync(chat.ChatId, text, CancellationToken.None);
+            _log.Info($"Sent Beeper message to {chat.Title} [{chat.Network}]: \"{text}\"");
+        }
+        catch (Exception ex) when (ex is BeeperApiException or HttpRequestException or TaskCanceledException)
+        {
+            _log.Warn($"Could not send Beeper message to \"{recipient}\" (task was still created): {ex.Message}");
         }
     }
 
