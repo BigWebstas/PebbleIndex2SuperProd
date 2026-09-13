@@ -1,4 +1,4 @@
-# Index2SP
+# Pebble Index 01 to Super Productivity and Joplin
 
 [![Build](https://github.com/BigWebstas/Index2SP/actions/workflows/build.yml/badge.svg)](https://github.com/BigWebstas/Index2SP/actions/workflows/build.yml)
 
