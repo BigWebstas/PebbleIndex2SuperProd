@@ -14,6 +14,11 @@ The transcription becomes the task title (capped at 300 chars); the full text
 plus capture metadata go in the notes. A configured project, tags, and a
 "voice-note" capture tag can be applied to every task.
 
+Optionally, Claude reads each transcription and decides where it actually
+belongs — see [AI classification](#ai-classification) below for what that adds
+(smarter project/tag picks, splitting a shopping list into one task per item,
+and saving notes to Joplin).
+
 If Super Productivity is unreachable when a note arrives, the task is written to
 a disk-backed **outbox** (`%APPDATA%\Index2SP\outbox\`) and retried in the
 background until it lands, so nothing is lost while SP is closed.
@@ -47,12 +52,34 @@ Each build comes **self-contained** (~50 MB, no runtime needed) or
 3. Send Pebble's **test event** — Index2SP shows "Test received", no task.
 4. Record a real note. Watch the tray notification and **View log**.
 
+## AI classification
+
+With `aiClassifier.enabled` on, every transcription is sent to Claude along
+with your real Super Productivity projects and tags (titles only). Claude
+decides, per task:
+
+- **Project and tags** — picked from your actual lists by title match, instead
+  of always applying the static `superProductivity.projectId` / `tagIds`.
+- **Note vs. to-do** — a fact, idea, or reference to save gets flagged as a
+  note. If `joplin.enabled` is also on, a copy is sent to Joplin's Web Clipper
+  API (Tools → Options → Web Clipper). The Super Productivity task is still
+  created either way — Joplin is additive, never a replacement.
+- **Shopping / errands** — "add bread, milk, and eggs to my shopping list"
+  becomes three separate tasks (`bread`, `milk`, `eggs`), each stripped down to
+  just the item. If `superProductivity.shoppingProjectId` is set, all of them
+  go there instead of wherever Claude would otherwise file them.
+
+Any failure — no/bad API key, network, timeout, a malformed reply — falls back
+to the static config from the table below. A task is always created either way.
+
 ## Configure
 
 First run writes `config.json` to `%APPDATA%\Index2SP\` (Windows) or
 `~/.config/Index2SP/` (Linux). Edit it from the tray menu, then **Reload config**.
-Most settings also have a tray shortcut (default project, default tags, start at
-login). See [`config.example.json`](config.example.json) for every field; the
+Most settings also have a tray shortcut — default project, default tags, start
+at login, and (under **AI classifier** / **Joplin notes**) the enabled toggles,
+API key / auth token prompts, model picker, shopping project, and default
+notebook. See [`config.example.json`](config.example.json) for every field; the
 ones that matter:
 
 | Field | Meaning |
@@ -62,9 +89,10 @@ ones that matter:
 | `superProductivity.accessToken` | Token from SP Settings → Misc. Required. |
 | `superProductivity.projectId` / `tagIds` | Applied to every task. Blank project = inbox. |
 | `superProductivity.captureTagId` / `captureTagName` | Optional tag marking Pebble captures. |
-| `aiClassifier.enabled` / `apiKey` | Have Claude read the transcription plus your real SP projects/tags and pick the best fit per task, instead of always using the static `projectId`/`tagIds` above. Off by default. Any failure (no/bad key, network, timeout) falls back to the static config — a task is always created. |
+| `aiClassifier.enabled` / `apiKey` | Turns on [AI classification](#ai-classification) above. Off by default; get a key at console.anthropic.com. |
 | `aiClassifier.model` / `timeoutSeconds` | Anthropic model id (default `claude-haiku-4-5`) and how long to wait before falling back. Default 8s, clamped 2–30. |
-| `joplin.enabled` / `authToken` | When the AI classifier decides a transcription is a note rather than a to-do, also send a copy to Joplin's Web Clipper API. The SP task is still created either way. Needs `aiClassifier.enabled` and Joplin's Web Clipper service turned on (Tools → Options → Web Clipper). |
+| `superProductivity.shoppingProjectId` | Shopping-item override project, see above. Blank = no override. |
+| `joplin.enabled` / `authToken` | Turns on sending notes to Joplin, see above. Needs the Web Clipper service on in Joplin (Tools → Options → Web Clipper). |
 | `joplin.notebookId` | Notebook to file notes under. Blank = Joplin's last-selected notebook. |
 | `outboxRetrySeconds` | Seconds between retry passes for queued tasks when SP was unreachable. Default 60, clamped 10–3600. |
 | `outboxMaxAttempts` | Give up on a queued task after this many failed attempts and move it to `outbox\failed\`. Default `0` = retry forever. |

@@ -24,7 +24,7 @@ public sealed class AiTaskClassifier
         _log = log;
     }
 
-    public sealed record Classification(string? ProjectId, List<string> TagIds, bool IsNote);
+    public sealed record Classification(string? ProjectId, List<string> TagIds, bool IsNote, bool IsShopping, List<string> ShoppingItems);
 
     public async Task<Classification?> ClassifyAsync(
         string transcription,
@@ -70,9 +70,19 @@ public sealed class AiTaskClassifier
                 var resolvedProjectId = projectId is not null && projects.Any(p => p.Id == projectId) ? projectId : null;
                 var resolvedTagIds = tagIds.Where(t => tags.Any(x => x.Id == t)).ToList();
                 var isNote = toolUse.Input.TryGetValue("isNote", out var nEl) && nEl.ValueKind == JsonValueKind.True;
+                var isShopping = toolUse.Input.TryGetValue("isShopping", out var sEl) && sEl.ValueKind == JsonValueKind.True;
 
-                _log.Info($"AI classify: project={resolvedProjectId ?? "(none)"}, tags=[{string.Join(',', resolvedTagIds)}], isNote={isNote}");
-                return new Classification(resolvedProjectId, resolvedTagIds, isNote);
+                var shoppingItems = new List<string>();
+                if (toolUse.Input.TryGetValue("shoppingItems", out var siEl) && siEl.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var el in siEl.EnumerateArray())
+                        if (el.ValueKind == JsonValueKind.String && el.GetString() is { Length: > 0 } s)
+                            shoppingItems.Add(s.Trim());
+                }
+
+                _log.Info($"AI classify: project={resolvedProjectId ?? "(none)"}, tags=[{string.Join(',', resolvedTagIds)}], " +
+                          $"isNote={isNote}, isShopping={isShopping}, shoppingItems=[{string.Join(',', shoppingItems)}]");
+                return new Classification(resolvedProjectId, resolvedTagIds, isNote, isShopping, shoppingItems);
             }
 
             _log.Warn("AI classify: response had no classify tool_use block");
@@ -112,8 +122,23 @@ public sealed class AiTaskClassifier
                     description = "true if this is a note, idea, or reference to save rather " +
                                    "than an actionable to-do (e.g. a fact, a quote, something to remember)",
                 }),
+                ["isShopping"] = JsonSerializer.SerializeToElement(new
+                {
+                    type = "boolean",
+                    description = "true if this is a shopping / errands item — something to buy or pick up " +
+                                   "(e.g. groceries, a store run, an online order)",
+                }),
+                ["shoppingItems"] = JsonSerializer.SerializeToElement(new
+                {
+                    type = "array",
+                    items = new { type = "string" },
+                    description = "Only when isShopping is true: one entry per distinct item to buy, each " +
+                                   "stripped down to just the item itself — e.g. [\"bread\"] from \"add bread " +
+                                   "to my shopping list\", or [\"bread\", \"milk\", \"eggs\"] from \"add bread, " +
+                                   "milk, and eggs to my shopping list\". [] when isShopping is false.",
+                }),
             },
-            Required = ["projectId", "tagIds", "isNote"],
+            Required = ["projectId", "tagIds", "isNote", "isShopping", "shoppingItems"],
         },
     };
 
@@ -125,7 +150,11 @@ public sealed class AiTaskClassifier
         sb.Append("based on their titles. Only use ids that appear in these lists. ");
         sb.Append("If nothing fits well, return null for projectId and [] for tagIds — do not force a match. ");
         sb.Append("Also decide whether this is a note to save (a fact, idea, or reference) rather than an ");
-        sb.Append("actionable to-do, and set isNote accordingly.\n\n");
+        sb.Append("actionable to-do, and set isNote accordingly. Separately, set isShopping if this is a ");
+        sb.Append("shopping or errands item — something to buy or pick up. When isShopping is true, also set ");
+        sb.Append("shoppingItems to one entry per distinct item, each stripped of phrasing like \"add to my ");
+        sb.Append("shopping list\" or \"I need to pick up\" — e.g. [\"bread\"], or [\"bread\", \"milk\", \"eggs\"] ");
+        sb.Append("when more than one item is mentioned, so each becomes its own task.\n\n");
 
         sb.Append("Projects:\n");
         if (projects.Count == 0) sb.Append("(none)\n");

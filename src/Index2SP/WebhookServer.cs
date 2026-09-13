@@ -178,37 +178,89 @@ public sealed class WebhookServer : IAsyncDisposable
                 statusCode: StatusCodes.Status422UnprocessableEntity);
         }
 
+        using var sp = new SuperProductivityClient(_config.SuperProductivity);
+        // Not ctx.RequestAborted: if a slow tunnel drops the connection just as SP creates the
+        // task, cancelling here would make us re-queue it and create a duplicate on retry. The
+        // HTTP client's own 15 s timeout bounds the call.
+        List<string>? shoppingItems = null;
+        if (_config.AiClassifier.Enabled)
+            shoppingItems = await ApplyAiClassificationAsync(sp, taskReq, payload.Transcription!);
+        await _captureTag.ApplyAsync(sp, taskReq, CancellationToken.None);
+
+        if (shoppingItems is { Count: > 0 })
+        {
+            // One task per item — "bread, milk, eggs" becomes three separate tasks, not one.
+            var outcomes = new List<TaskOutcome>();
+            foreach (var item in shoppingItems)
+                outcomes.Add(await CreateOrQueueTaskAsync(sp, ForShoppingItem(taskReq, item, _config.TitleMaxLength)));
+
+            var anyPermanentFailure = outcomes.Any(o => o.Error is not null);
+            return Results.Json(new
+            {
+                ok = !anyPermanentFailure,
+                data = new
+                {
+                    tasks = outcomes.Select(o => new { title = o.Title, taskId = o.TaskId, queued = o.Queued, error = o.Error }),
+                },
+            }, statusCode: anyPermanentFailure ? StatusCodes.Status502BadGateway : StatusCodes.Status200OK);
+        }
+
+        var outcome = await CreateOrQueueTaskAsync(sp, taskReq);
+        if (outcome.Error is not null)
+            return Results.Json(new { ok = false, error = new { message = outcome.Error } },
+                statusCode: StatusCodes.Status502BadGateway);
+        if (outcome.Queued)
+            return Results.Json(new { ok = true, data = new { queued = true, title = outcome.Title } },
+                statusCode: StatusCodes.Status202Accepted);
+        return Results.Json(new { ok = true, data = new { taskId = outcome.TaskId, title = outcome.Title } });
+    }
+
+    private sealed record TaskOutcome(string Title, string? TaskId, bool Queued, string? Error);
+
+    /// <summary>
+    /// Creates one task in Super Productivity, or queues it in the outbox on a transient
+    /// failure. Never throws — SP being down or rejecting the request comes back as a
+    /// <see cref="TaskOutcome"/> instead, so a caller filing several tasks from one webhook
+    /// (the shopping-list split) can let one item's failure not block the others.
+    /// </summary>
+    private async Task<TaskOutcome> CreateOrQueueTaskAsync(SuperProductivityClient sp, SpTaskRequest task)
+    {
         try
         {
-            using var sp = new SuperProductivityClient(_config.SuperProductivity);
-            // Not ctx.RequestAborted: if a slow tunnel drops the connection just as SP creates the
-            // task, cancelling here would make us re-queue it and create a duplicate on retry. The
-            // HTTP client's own 15 s timeout bounds the call.
-            if (_config.AiClassifier.Enabled)
-                await ApplyAiClassificationAsync(sp, taskReq, payload.Transcription!);
-            await _captureTag.ApplyAsync(sp, taskReq, CancellationToken.None);
-            var result = await sp.CreateTaskAsync(taskReq, CancellationToken.None);
-            _log.Info($"Created Super Productivity task{(result.TaskId is null ? "" : $" {result.TaskId}")}: \"{taskReq.Title}\"");
-            TaskCreated?.Invoke(taskReq.Title, result.TaskId);
-            return Results.Json(new { ok = true, data = new { taskId = result.TaskId, title = taskReq.Title } });
+            var result = await sp.CreateTaskAsync(task, CancellationToken.None);
+            _log.Info($"Created Super Productivity task{(result.TaskId is null ? "" : $" {result.TaskId}")}: \"{task.Title}\"");
+            TaskCreated?.Invoke(task.Title, result.TaskId);
+            return new TaskOutcome(task.Title, result.TaskId, false, null);
         }
         catch (SpApiException ex) when (ex.Permanent)
         {
             // Retrying the same request can't help (bad token, rejected body) — fail loudly.
-            _log.Error($"Super Productivity rejected task \"{taskReq.Title}\" — not queued", ex);
+            _log.Error($"Super Productivity rejected task \"{task.Title}\" — not queued", ex);
             WebhookFailed?.Invoke(ex.Message);
-            return Results.Json(new { ok = false, error = new { message = ex.Message } },
-                statusCode: StatusCodes.Status502BadGateway);
+            return new TaskOutcome(task.Title, null, false, ex.Message);
         }
         catch (Exception ex) when (ex is SpApiException or HttpRequestException or TaskCanceledException)
         {
             // SP unreachable / transient — persist and let the outbox retry it.
-            _log.Warn($"Could not deliver task \"{taskReq.Title}\" now ({ex.Message}) — queuing for retry");
-            _outbox.Enqueue(taskReq);
-            TaskQueued?.Invoke(taskReq.Title);
-            return Results.Json(new { ok = true, data = new { queued = true, title = taskReq.Title } },
-                statusCode: StatusCodes.Status202Accepted);
+            _log.Warn($"Could not deliver task \"{task.Title}\" now ({ex.Message}) — queuing for retry");
+            _outbox.Enqueue(task);
+            TaskQueued?.Invoke(task.Title);
+            return new TaskOutcome(task.Title, null, true, null);
         }
+    }
+
+    /// <summary>Clones <paramref name="template"/> (same notes/project/tags) with its title
+    /// replaced by one bare shopping item, capped the same way PayloadConverter caps titles.</summary>
+    private static SpTaskRequest ForShoppingItem(SpTaskRequest template, string item, int titleMaxLength)
+    {
+        var title = item.Length <= titleMaxLength ? item : item[..(titleMaxLength - 1)].TrimEnd() + "…";
+        return new SpTaskRequest
+        {
+            Title = title,
+            Notes = template.Notes,
+            ProjectId = template.ProjectId,
+            TagIds = template.TagIds is null ? null : new List<string>(template.TagIds),
+        };
     }
 
     /// <summary>
@@ -216,25 +268,38 @@ public sealed class WebhookServer : IAsyncDisposable
     /// the transcription against the caller's real SP projects/tags. Never throws and never
     /// leaves the task without the static config's values — any failure here (SP list fetch,
     /// the AI call itself) just leaves taskReq as PayloadConverter built it.
+    /// Returns the bare shopping items to split into separate tasks, or null when this isn't a
+    /// multi-item shopping capture (the caller then uses taskReq as-is, title included).
     /// </summary>
-    private async Task ApplyAiClassificationAsync(SuperProductivityClient sp, SpTaskRequest taskReq, string transcription)
+    private async Task<List<string>?> ApplyAiClassificationAsync(SuperProductivityClient sp, SpTaskRequest taskReq, string transcription)
     {
         try
         {
             var projects = await sp.GetProjectsAsync(CancellationToken.None);
             var tags = await sp.GetTagsAsync(CancellationToken.None);
             var result = await _classifier.ClassifyAsync(transcription, projects, tags, CancellationToken.None);
-            if (result is null) return;
+            if (result is null) return null;
 
             if (result.ProjectId is not null) taskReq.ProjectId = result.ProjectId;
             if (result.TagIds.Count > 0) taskReq.TagIds = result.TagIds;
 
             if (result.IsNote && _config.Joplin.Enabled)
                 await SendToJoplinAsync(taskReq.Title, taskReq.Notes ?? transcription);
+
+            if (!result.IsShopping) return null;
+
+            // A configured shopping project always wins over the classifier's own pick —
+            // it's an explicit user choice, not a guess from project titles.
+            var shoppingProjectId = _config.SuperProductivity.ShoppingProjectId;
+            if (!string.IsNullOrWhiteSpace(shoppingProjectId))
+                taskReq.ProjectId = shoppingProjectId.Trim();
+
+            return result.ShoppingItems.Count > 0 ? result.ShoppingItems : null;
         }
         catch (Exception ex) when (ex is SpApiException or HttpRequestException or TaskCanceledException)
         {
             _log.Warn($"AI classify skipped (couldn't load projects/tags): {ex.Message}");
+            return null;
         }
     }
 

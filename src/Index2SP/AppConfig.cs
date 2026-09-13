@@ -119,6 +119,12 @@ public sealed class AppConfig
         /// <summary>Optional tag ids applied to every created task.</summary>
         public List<string> TagIds { get; set; } = new();
 
+        /// <summary>Optional: when the AI classifier (aiClassifier.enabled) detects a shopping /
+        /// errands item, file it under this project instead of whatever project it would
+        /// otherwise have picked. Blank = no override, the classifier's normal pick stands.
+        /// Ignored while the classifier is disabled.</summary>
+        public string ShoppingProjectId { get; set; } = "";
+
         /// <summary>Optional: one tag applied to every task created from a Pebble capture
         /// (e.g. a "voice-note" / "index" tag you can filter on in Super Productivity).
         /// Give the tag id directly here…</summary>

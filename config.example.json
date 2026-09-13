@@ -15,7 +15,8 @@
     "projectId": "",
     "tagIds": [],
     "captureTagId": "",
-    "captureTagName": "voice-note"
+    "captureTagName": "voice-note",
+    "shoppingProjectId": ""
   },
   "aiClassifier": {
     "enabled": false,

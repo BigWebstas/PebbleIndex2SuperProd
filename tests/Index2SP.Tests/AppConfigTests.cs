@@ -1,0 +1,118 @@
+using Xunit;
+
+namespace Index2SP.Tests;
+
+public class AppConfigTests : IDisposable
+{
+    private readonly string _dir = Directory.CreateTempSubdirectory("index2sp-tests-").FullName;
+    private string ConfigPath => Path.Combine(_dir, "config.json");
+
+    public void Dispose() => Directory.Delete(_dir, recursive: true);
+
+    [Fact]
+    public void LoadOrCreate_WritesDefaultsWhenFileMissing()
+    {
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.True(File.Exists(ConfigPath));
+        Assert.Equal("/pebble", config.WebhookPath);
+        Assert.Equal(8787, config.Port);
+    }
+
+    [Fact]
+    public void SaveThenLoad_RoundTripsValues()
+    {
+        var original = AppConfig.LoadOrCreate(ConfigPath);
+        original.Port = 9999;
+        original.SuperProductivity.ProjectId = "proj-1";
+        original.AiClassifier.Enabled = true;
+        original.AiClassifier.ApiKey = "sk-test";
+        original.Joplin.NotebookId = "notebook-1";
+        original.Save(ConfigPath);
+
+        var reloaded = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.Equal(9999, reloaded.Port);
+        Assert.Equal("proj-1", reloaded.SuperProductivity.ProjectId);
+        Assert.True(reloaded.AiClassifier.Enabled);
+        Assert.Equal("sk-test", reloaded.AiClassifier.ApiKey);
+        Assert.Equal("notebook-1", reloaded.Joplin.NotebookId);
+    }
+
+    [Theory]
+    [InlineData("pebble", "/pebble")]
+    [InlineData("/pebble/", "/pebble")]
+    [InlineData("", "/pebble")]
+    [InlineData("   ", "/pebble")]
+    public void Normalize_FixesUpWebhookPath(string input, string expected)
+    {
+        File.WriteAllText(ConfigPath, $$"""{ "webhookPath": "{{input}}" }""");
+
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.Equal(expected, config.WebhookPath);
+    }
+
+    [Theory]
+    [InlineData(5, 10)]   // below min clamps up
+    [InlineData(9999, 3600)] // above max clamps down
+    public void Normalize_ClampsOutboxRetrySeconds(int input, int expected)
+    {
+        File.WriteAllText(ConfigPath, $$"""{ "outboxRetrySeconds": {{input}} }""");
+
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.Equal(expected, config.OutboxRetrySeconds);
+    }
+
+    [Fact]
+    public void Normalize_NegativeOutboxMaxAttemptsBecomesZero()
+    {
+        File.WriteAllText(ConfigPath, """{ "outboxMaxAttempts": -5 }""");
+
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.Equal(0, config.OutboxMaxAttempts);
+    }
+
+    [Theory]
+    [InlineData(0, 0)]      // 0 disables the timer, left alone
+    [InlineData(1, 15)]     // non-zero clamps up to the 15s floor
+    [InlineData(99999, 3600)]
+    public void Normalize_ClampsHealthCheckSeconds(int input, int expected)
+    {
+        File.WriteAllText(ConfigPath, $$"""{ "healthCheckSeconds": {{input}} }""");
+
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.Equal(expected, config.HealthCheckSeconds);
+    }
+
+    [Theory]
+    [InlineData(1, 2)]
+    [InlineData(999, 30)]
+    public void Normalize_ClampsAiClassifierTimeoutSeconds(int input, int expected)
+    {
+        File.WriteAllText(ConfigPath, $$"""{ "aiClassifier": { "timeoutSeconds": {{input}} } }""");
+
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.Equal(expected, config.AiClassifier.TimeoutSeconds);
+    }
+
+    [Fact]
+    public void Normalize_TrimsTrailingSlashFromBaseUrls()
+    {
+        File.WriteAllText(ConfigPath, """
+        {
+          "superProductivity": { "baseUrl": "http://127.0.0.1:3876/" },
+          "joplin": { "baseUrl": "http://127.0.0.1:41184/" }
+        }
+        """);
+
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.Equal("http://127.0.0.1:3876", config.SuperProductivity.BaseUrl);
+        Assert.Equal("http://127.0.0.1:41184", config.Joplin.BaseUrl);
+    }
+}

@@ -30,8 +30,18 @@ jobs:
           fi
           cat "$GITHUB_OUTPUT"
 
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+      - name: Run unit tests
+        run: dotnet test tests/Index2SP.Tests/Index2SP.Tests.csproj
+
   windows:
-    needs: version
+    needs: [version, test]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -59,7 +69,7 @@ jobs:
           retention-days: 7
 
   linux:
-    needs: version
+    needs: [version, test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

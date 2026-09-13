@@ -262,7 +262,43 @@ public sealed class TrayController : IDisposable
         m.Add(Action(string.IsNullOrWhiteSpace(cfg.ApiKey) ? "Set API key…" : "Change API key…",
             () => _ = SetApiKeyAsync()));
         m.Add(new NativeMenuItem("Model") { Menu = BuildAiModelSubmenu() });
+        m.Add(new NativeMenuItem("Shopping project") { Menu = BuildShoppingProjectSubmenu() });
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.ApiKey) ? "No API key set" : "API key is set"));
+        return m;
+    }
+
+    private NativeMenu BuildShoppingProjectSubmenu()
+    {
+        var m = new NativeMenu();
+        var current = _config.SuperProductivity.ShoppingProjectId ?? "";
+
+        var none = new NativeMenuItem("(no override — use the classifier's own pick)")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = current.Length == 0,
+        };
+        none.Click += (_, _) => SetShoppingProject("", "no override");
+        m.Add(none);
+
+        if (_projects.Count == 0)
+        {
+            m.Add(new NativeMenuItem("(run “Refresh projects, tags & notebooks”)") { IsEnabled = false });
+            return m;
+        }
+
+        m.Add(new NativeMenuItemSeparator());
+        foreach (var p in _projects.OrderBy(x => x.Title, StringComparer.OrdinalIgnoreCase))
+        {
+            var id = p.Id;
+            var title = p.Title;
+            var item = new NativeMenuItem(title)
+            {
+                ToggleType = NativeMenuItemToggleType.CheckBox,
+                IsChecked = id == current,
+            };
+            item.Click += (_, _) => SetShoppingProject(id, title);
+            m.Add(item);
+        }
         return m;
     }
 
@@ -557,6 +593,17 @@ public sealed class TrayController : IDisposable
         SaveConfig(id.Length == 0 ? "default project cleared (inbox)" : $"default project = \"{label}\" [{id}]");
         Notify("Default project updated",
             id.Length == 0 ? "New tasks go to the inbox." : $"New tasks → {label}", NotifyKind.Info);
+    }
+
+    private void SetShoppingProject(string id, string label)
+    {
+        _config.SuperProductivity.ShoppingProjectId = id;
+        SaveConfig(id.Length == 0
+            ? "shopping project override cleared"
+            : $"shopping project = \"{label}\" [{id}]");
+        Notify("Shopping project updated",
+            id.Length == 0 ? "Shopping items use the AI classifier's own pick." : $"Shopping items → {label}",
+            NotifyKind.Info);
     }
 
     private void ToggleDefaultTag(string id, string label)
