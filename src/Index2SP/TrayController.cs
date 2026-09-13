@@ -135,17 +135,11 @@ public sealed class TrayController : IDisposable
         menu.Add(Action(_server?.IsRunning == true ? "Stop listener" : "Start listener",
             () => _ = ToggleServerAsync()));
         menu.Add(Action("Copy webhook URL", CopyWebhookUrl));
-        menu.Add(Action("Test Super Productivity connection", () => _ = RunHealthCheckAsync(manual: true)));
-        if (queued > 0)
-            menu.Add(Action($"Retry {queued} queued task{(queued == 1 ? "" : "s")} now",
-                () => _ = FlushOutboxAsync()));
-        menu.Add(new NativeMenuItemSeparator());
-
-        menu.Add(new NativeMenuItem("Default project") { Menu = BuildProjectSubmenu() });
-        menu.Add(new NativeMenuItem("Default tags") { Menu = BuildTagsSubmenu() });
+        menu.Add(Action("Test all connections", () => _ = RunAllConnectionsTestAsync()));
         menu.Add(Action("Refresh projects, tags & notebooks", () => _ = RefreshListsAsync(notifyOnError: true)));
         menu.Add(new NativeMenuItemSeparator());
 
+        menu.Add(new NativeMenuItem("Super Productivity") { Menu = BuildSuperProductivitySubmenu() });
         menu.Add(new NativeMenuItem("AI classifier") { Menu = BuildAiClassifierSubmenu() });
         menu.Add(new NativeMenuItem("Joplin notes") { Menu = BuildJoplinSubmenu() });
         menu.Add(new NativeMenuItem("Google Calendar") { Menu = BuildGoogleCalendarSubmenu() });
@@ -297,6 +291,22 @@ public sealed class TrayController : IDisposable
             SaveConfig("cleared all default tags");
         };
         m.Add(clear);
+        return m;
+    }
+
+    private NativeMenu BuildSuperProductivitySubmenu()
+    {
+        var m = new NativeMenu();
+        var queued = _outbox.PendingCount;
+
+        m.Add(Action("Test connection", () => _ = RunHealthCheckAsync(manual: true)));
+        if (queued > 0)
+            m.Add(Action($"Retry {queued} queued task{(queued == 1 ? "" : "s")} now",
+                () => _ = FlushOutboxAsync()));
+        m.Add(new NativeMenuItemSeparator());
+
+        m.Add(new NativeMenuItem("Default project") { Menu = BuildProjectSubmenu() });
+        m.Add(new NativeMenuItem("Default tags") { Menu = BuildTagsSubmenu() });
         return m;
     }
 
@@ -647,9 +657,12 @@ public sealed class TrayController : IDisposable
 
     // ---- health check -----------------------------------------------
 
-    private async Task RunHealthCheckAsync(bool manual)
+    /// <param name="forceRun">Bypasses the "listener must be running" gate without triggering
+    /// the individual pop-up notification <paramref name="manual"/> normally would — used by
+    /// <see cref="RunAllConnectionsTestAsync"/> so "Test all connections" always probes SP.</param>
+    private async Task RunHealthCheckAsync(bool manual, bool forceRun = false)
     {
-        if (!manual && (_healthCheckInFlight || _server?.IsRunning != true)) return;
+        if (!manual && !forceRun && (_healthCheckInFlight || _server?.IsRunning != true)) return;
         _healthCheckInFlight = true;
         try
         {
@@ -857,6 +870,47 @@ public sealed class TrayController : IDisposable
             _beeperHealthCheckInFlight = false;
         }
     }
+
+    /// <summary>Probes every configured destination (SP always; Joplin/Google Calendar/Beeper
+    /// only when a credential is set) and shows one combined result instead of four separate
+    /// pop-ups.</summary>
+    private async Task RunAllConnectionsTestAsync()
+    {
+        await RunHealthCheckAsync(manual: false, forceRun: true);
+        var lines = new List<string> { $"Super Productivity: {DescribeHealth(_spHealth)}" };
+        var allOk = _spHealth == SpHealth.Ok;
+
+        if (!string.IsNullOrWhiteSpace(_config.Joplin.AuthToken))
+        {
+            await RunJoplinHealthCheckAsync(manual: false);
+            lines.Add($"Joplin: {DescribeHealth(_joplinHealth)}");
+            allOk &= _joplinHealth == SpHealth.Ok;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_config.GoogleCalendar.RefreshToken))
+        {
+            await RunGoogleCalendarHealthCheckAsync(manual: false);
+            lines.Add($"Google Calendar: {DescribeHealth(_googleHealth)}");
+            allOk &= _googleHealth == SpHealth.Ok;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_config.Beeper.ApiToken))
+        {
+            await RunBeeperHealthCheckAsync(manual: false);
+            lines.Add($"Beeper: {DescribeHealth(_beeperHealth)}");
+            allOk &= _beeperHealth == SpHealth.Ok;
+        }
+
+        Notify(allOk ? "All connections OK" : "Some connections failed",
+            string.Join("\n", lines), allOk ? NotifyKind.Info : NotifyKind.Error, force: true);
+    }
+
+    private static string DescribeHealth(SpHealth health) => health switch
+    {
+        SpHealth.Ok => "reachable",
+        SpHealth.Unreachable => "unreachable",
+        _ => "not checked",
+    };
 
     // ---- outbox retry ----------------------------------------------
 

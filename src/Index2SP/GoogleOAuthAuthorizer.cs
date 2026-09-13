@@ -16,7 +16,11 @@ public static class GoogleOAuthAuthorizer
 {
     private const string AuthEndpoint = "https://accounts.google.com/o/oauth2/v2/auth";
     private const string TokenEndpoint = "https://oauth2.googleapis.com/token";
-    private const string Scope = "https://www.googleapis.com/auth/calendar.events";
+    // calendar.events alone can create/read events but returns 403 on GET calendarList (used
+    // for the tray's "Default calendar" picker) — add the narrow read-only calendarlist scope
+    // rather than widen to the full calendar scope, which would also grant deleting calendars.
+    private const string Scope = "https://www.googleapis.com/auth/calendar.events " +
+                                  "https://www.googleapis.com/auth/calendar.calendarlist.readonly";
 
     public sealed record AuthorizeResult(string RefreshToken);
 

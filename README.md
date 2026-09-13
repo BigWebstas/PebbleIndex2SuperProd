@@ -135,12 +135,14 @@ above before turning this on — it sends immediately, with no review step.
 
 First run writes `config.json` to `%APPDATA%\Index2SP\` (Windows) or
 `~/.config/Index2SP/` (Linux). Edit it from the tray menu, then **Reload config**.
-Most settings also have a tray shortcut — default project, default tags, start
-at login, and (under **AI classifier** / **Joplin notes** / **Google
+Most settings also have a tray shortcut — start at login, **Test all
+connections** (one combined check across every configured destination), and
+(under **Super Productivity** / **AI classifier** / **Joplin notes** / **Google
 Calendar** / **Beeper messages**) the enabled toggles, API key / auth token /
-OAuth client prompts, model picker, shopping project, require-at-least-one-tag,
-default notebook, default tag, and default calendar. See
-[`config.example.json`](config.example.json) for every field; the ones that matter:
+OAuth client prompts, model picker, default project, default tags, shopping
+project, require-at-least-one-tag, default notebook, default tag, and default
+calendar. See [`config.example.json`](config.example.json) for every field;
+the ones that matter:
 
 | Field | Meaning |
 |---|---|
