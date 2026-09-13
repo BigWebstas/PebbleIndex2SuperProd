@@ -62,6 +62,10 @@ ones that matter:
 | `superProductivity.accessToken` | Token from SP Settings → Misc. Required. |
 | `superProductivity.projectId` / `tagIds` | Applied to every task. Blank project = inbox. |
 | `superProductivity.captureTagId` / `captureTagName` | Optional tag marking Pebble captures. |
+| `aiClassifier.enabled` / `apiKey` | Have Claude read the transcription plus your real SP projects/tags and pick the best fit per task, instead of always using the static `projectId`/`tagIds` above. Off by default. Any failure (no/bad key, network, timeout) falls back to the static config — a task is always created. |
+| `aiClassifier.model` / `timeoutSeconds` | Anthropic model id (default `claude-haiku-4-5`) and how long to wait before falling back. Default 8s, clamped 2–30. |
+| `joplin.enabled` / `authToken` | When the AI classifier decides a transcription is a note rather than a to-do, also send a copy to Joplin's Web Clipper API. The SP task is still created either way. Needs `aiClassifier.enabled` and Joplin's Web Clipper service turned on (Tools → Options → Web Clipper). |
+| `joplin.notebookId` | Notebook to file notes under. Blank = Joplin's last-selected notebook. |
 | `outboxRetrySeconds` | Seconds between retry passes for queued tasks when SP was unreachable. Default 60, clamped 10–3600. |
 | `outboxMaxAttempts` | Give up on a queued task after this many failed attempts and move it to `outbox\failed\`. Default `0` = retry forever. |
 | `testEventPhrase` | Transcription that triggers "Test received" instead of a task. Default `Index webhook test event`. |

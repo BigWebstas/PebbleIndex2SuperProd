@@ -20,14 +20,16 @@ public sealed class WebhookServer : IAsyncDisposable
     private readonly Logger _log;
     private readonly CaptureTagResolver _captureTag;
     private readonly Outbox _outbox;
+    private readonly AiTaskClassifier _classifier;
     private WebApplication? _app;
 
-    public WebhookServer(AppConfig config, Logger log, CaptureTagResolver captureTag, Outbox outbox)
+    public WebhookServer(AppConfig config, Logger log, CaptureTagResolver captureTag, Outbox outbox, AiTaskClassifier classifier)
     {
         _config = config;
         _log = log;
         _captureTag = captureTag;
         _outbox = outbox;
+        _classifier = classifier;
     }
 
     public bool IsRunning => _app is not null;
@@ -182,6 +184,8 @@ public sealed class WebhookServer : IAsyncDisposable
             // Not ctx.RequestAborted: if a slow tunnel drops the connection just as SP creates the
             // task, cancelling here would make us re-queue it and create a duplicate on retry. The
             // HTTP client's own 15 s timeout bounds the call.
+            if (_config.AiClassifier.Enabled)
+                await ApplyAiClassificationAsync(sp, taskReq, payload.Transcription!);
             await _captureTag.ApplyAsync(sp, taskReq, CancellationToken.None);
             var result = await sp.CreateTaskAsync(taskReq, CancellationToken.None);
             _log.Info($"Created Super Productivity task{(result.TaskId is null ? "" : $" {result.TaskId}")}: \"{taskReq.Title}\"");
@@ -204,6 +208,52 @@ public sealed class WebhookServer : IAsyncDisposable
             TaskQueued?.Invoke(taskReq.Title);
             return Results.Json(new { ok = true, data = new { queued = true, title = taskReq.Title } },
                 statusCode: StatusCodes.Status202Accepted);
+        }
+    }
+
+    /// <summary>
+    /// Lets Claude override the static projectId/tagIds on <paramref name="taskReq"/> by reading
+    /// the transcription against the caller's real SP projects/tags. Never throws and never
+    /// leaves the task without the static config's values — any failure here (SP list fetch,
+    /// the AI call itself) just leaves taskReq as PayloadConverter built it.
+    /// </summary>
+    private async Task ApplyAiClassificationAsync(SuperProductivityClient sp, SpTaskRequest taskReq, string transcription)
+    {
+        try
+        {
+            var projects = await sp.GetProjectsAsync(CancellationToken.None);
+            var tags = await sp.GetTagsAsync(CancellationToken.None);
+            var result = await _classifier.ClassifyAsync(transcription, projects, tags, CancellationToken.None);
+            if (result is null) return;
+
+            if (result.ProjectId is not null) taskReq.ProjectId = result.ProjectId;
+            if (result.TagIds.Count > 0) taskReq.TagIds = result.TagIds;
+
+            if (result.IsNote && _config.Joplin.Enabled)
+                await SendToJoplinAsync(taskReq.Title, taskReq.Notes ?? transcription);
+        }
+        catch (Exception ex) when (ex is SpApiException or HttpRequestException or TaskCanceledException)
+        {
+            _log.Warn($"AI classify skipped (couldn't load projects/tags): {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Best-effort archive copy in Joplin for transcriptions the classifier marked as a note.
+    /// Purely additive — the Super Productivity task is created either way, so any failure here
+    /// is just logged and never surfaces to the webhook caller.
+    /// </summary>
+    private async Task SendToJoplinAsync(string title, string body)
+    {
+        try
+        {
+            using var joplin = new JoplinClient(_config.Joplin);
+            await joplin.CreateNoteAsync(title, body, CancellationToken.None);
+            _log.Info($"Sent note to Joplin: \"{title}\"");
+        }
+        catch (Exception ex) when (ex is JoplinApiException or HttpRequestException or TaskCanceledException)
+        {
+            _log.Warn($"Could not send note to Joplin (task was still created): {ex.Message}");
         }
     }
 

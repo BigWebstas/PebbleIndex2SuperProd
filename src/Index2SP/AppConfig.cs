@@ -50,6 +50,59 @@ public sealed class AppConfig
 
     public SuperProductivityConfig SuperProductivity { get; set; } = new();
 
+    public AiClassifierConfig AiClassifier { get; set; } = new();
+
+    public JoplinConfig Joplin { get; set; } = new();
+
+    /// <summary>
+    /// Optional: when the AI classifier decides a transcription is a note rather than an
+    /// actionable task, also send a copy to Joplin via its Web Clipper API. The Super
+    /// Productivity task is still created either way — this is additive, never a replacement.
+    /// Requires aiClassifier.enabled, and Joplin running with Tools → Options → Web Clipper →
+    /// "Enable Web Clipper Service" turned on.
+    /// </summary>
+    public sealed class JoplinConfig
+    {
+        public bool Enabled { get; set; } = false;
+
+        /// <summary>Joplin's Web Clipper API, shown on Tools → Options → Web Clipper.</summary>
+        public string BaseUrl { get; set; } = "http://127.0.0.1:41184";
+
+        /// <summary>Authorisation token from the same Web Clipper settings page.</summary>
+        public string AuthToken { get; set; } = "";
+
+        /// <summary>Notebook (folder) id to file notes under. Blank = Joplin's default
+        /// (the last notebook selected in the app).</summary>
+        public string NotebookId { get; set; } = "";
+
+        /// <summary>Seconds to wait for Joplin before giving up. Clamped 2–30.</summary>
+        public int TimeoutSeconds { get; set; } = 8;
+    }
+
+    /// <summary>
+    /// Optional: have Claude read the transcription plus your existing Super Productivity
+    /// projects/tags and pick the best fit for each new task, instead of always applying the
+    /// static superProductivity.projectId / tagIds. Disabled by default. Any failure (no key,
+    /// network, timeout, bad response) falls back to the static config — a task is always
+    /// created either way.
+    /// </summary>
+    public sealed class AiClassifierConfig
+    {
+        public bool Enabled { get; set; } = false;
+
+        /// <summary>Anthropic API key. Get one at https://console.anthropic.com/ . Leave blank to
+        /// keep the classifier disabled even if Enabled is true.</summary>
+        public string ApiKey { get; set; } = "";
+
+        /// <summary>Model id. The default is fast and cheap — plenty for picking a project/tag
+        /// from a short list by title match.</summary>
+        public string Model { get; set; } = "claude-haiku-4-5";
+
+        /// <summary>Seconds to wait for Claude before giving up and using the static config.
+        /// Clamped to 2–30.</summary>
+        public int TimeoutSeconds { get; set; } = 8;
+    }
+
     public sealed class SuperProductivityConfig
     {
         /// <summary>Base URL of the Super Productivity desktop Local REST API.</summary>
@@ -135,6 +188,12 @@ public sealed class AppConfig
             HealthCheckSeconds = Math.Clamp(HealthCheckSeconds, 15, 3600);
         OutboxRetrySeconds = Math.Clamp(OutboxRetrySeconds, 10, 3600);
         if (OutboxMaxAttempts < 0) OutboxMaxAttempts = 0;
+        AiClassifier ??= new AiClassifierConfig();
+        AiClassifier.TimeoutSeconds = Math.Clamp(AiClassifier.TimeoutSeconds, 2, 30);
+        Joplin ??= new JoplinConfig();
+        Joplin.TimeoutSeconds = Math.Clamp(Joplin.TimeoutSeconds, 2, 30);
+        if (string.IsNullOrWhiteSpace(Joplin.BaseUrl)) Joplin.BaseUrl = "http://127.0.0.1:41184";
+        Joplin.BaseUrl = Joplin.BaseUrl.TrimEnd('/');
         SuperProductivity ??= new SuperProductivityConfig();
         if (string.IsNullOrWhiteSpace(SuperProductivity.BaseUrl))
             SuperProductivity.BaseUrl = "http://127.0.0.1:3876";

@@ -16,5 +16,18 @@
     "tagIds": [],
     "captureTagId": "",
     "captureTagName": "voice-note"
+  },
+  "aiClassifier": {
+    "enabled": false,
+    "apiKey": "paste-an-anthropic-api-key-from-console.anthropic.com",
+    "model": "claude-haiku-4-5",
+    "timeoutSeconds": 8
+  },
+  "joplin": {
+    "enabled": false,
+    "baseUrl": "http://127.0.0.1:41184",
+    "authToken": "paste-token-from-Joplin-Tools-Options-Web-Clipper",
+    "notebookId": "",
+    "timeoutSeconds": 8
   }
 }

@@ -25,6 +25,7 @@ public sealed class TrayController : IDisposable
 
     private AppConfig _config;
     private CaptureTagResolver _captureTag;
+    private AiTaskClassifier _classifier;
     private WebhookServer? _server;
     private LogWindow? _logWindow;
 
@@ -38,6 +39,14 @@ public sealed class TrayController : IDisposable
 
     private IReadOnlyList<SpNamedItem> _projects = Array.Empty<SpNamedItem>();
     private IReadOnlyList<SpNamedItem> _tags = Array.Empty<SpNamedItem>();
+    private IReadOnlyList<SpNamedItem> _notebooks = Array.Empty<SpNamedItem>();
+
+    private static readonly (string Id, string Label)[] AiModels =
+    [
+        ("claude-haiku-4-5", "Haiku (fast, cheap — default)"),
+        ("claude-sonnet-5", "Sonnet (more capable)"),
+        ("claude-opus-5", "Opus (most capable)"),
+    ];
 
     public TrayController(IClassicDesktopStyleApplicationLifetime desktop, AppConfig config, string configPath, Logger log)
     {
@@ -46,6 +55,7 @@ public sealed class TrayController : IDisposable
         _configPath = configPath;
         _log = log;
         _captureTag = new CaptureTagResolver(config.SuperProductivity, log);
+        _classifier = new AiTaskClassifier(config.AiClassifier, log);
         _outbox = new Outbox(AppConfig.ConfigDirectory, log);
         _outbox.ItemDelivered += OnOutboxDelivered;
         _outbox.ItemFailed += OnOutboxFailed;
@@ -116,7 +126,11 @@ public sealed class TrayController : IDisposable
 
         menu.Add(new NativeMenuItem("Default project") { Menu = BuildProjectSubmenu() });
         menu.Add(new NativeMenuItem("Default tags") { Menu = BuildTagsSubmenu() });
-        menu.Add(Action("Refresh projects & tags", () => _ = RefreshListsAsync(notifyOnError: true)));
+        menu.Add(Action("Refresh projects, tags & notebooks", () => _ = RefreshListsAsync(notifyOnError: true)));
+        menu.Add(new NativeMenuItemSeparator());
+
+        menu.Add(new NativeMenuItem("AI classifier") { Menu = BuildAiClassifierSubmenu() });
+        menu.Add(new NativeMenuItem("Joplin notes") { Menu = BuildJoplinSubmenu() });
         menu.Add(new NativeMenuItemSeparator());
 
         menu.Add(Action("Edit config…", OpenConfig));
@@ -232,13 +246,106 @@ public sealed class TrayController : IDisposable
         return m;
     }
 
+    private NativeMenu BuildAiClassifierSubmenu()
+    {
+        var m = new NativeMenu();
+        var cfg = _config.AiClassifier;
+
+        var enabled = new NativeMenuItem("Enabled")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = cfg.Enabled,
+        };
+        enabled.Click += (_, _) => ToggleAiEnabled();
+        m.Add(enabled);
+
+        m.Add(Action(string.IsNullOrWhiteSpace(cfg.ApiKey) ? "Set API key…" : "Change API key…",
+            () => _ = SetApiKeyAsync()));
+        m.Add(new NativeMenuItem("Model") { Menu = BuildAiModelSubmenu() });
+        m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.ApiKey) ? "No API key set" : "API key is set"));
+        return m;
+    }
+
+    private NativeMenu BuildAiModelSubmenu()
+    {
+        var m = new NativeMenu();
+        var current = _config.AiClassifier.Model;
+
+        foreach (var (id, label) in AiModels)
+        {
+            var item = new NativeMenuItem(label)
+            {
+                ToggleType = NativeMenuItemToggleType.CheckBox,
+                IsChecked = id == current,
+            };
+            item.Click += (_, _) => SetAiModel(id, label);
+            m.Add(item);
+        }
+        return m;
+    }
+
+    private NativeMenu BuildJoplinSubmenu()
+    {
+        var m = new NativeMenu();
+        var cfg = _config.Joplin;
+
+        var enabled = new NativeMenuItem("Enabled")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = cfg.Enabled,
+        };
+        enabled.Click += (_, _) => ToggleJoplinEnabled();
+        m.Add(enabled);
+
+        m.Add(Action(string.IsNullOrWhiteSpace(cfg.AuthToken) ? "Set auth token…" : "Change auth token…",
+            () => _ = SetJoplinTokenAsync()));
+        m.Add(new NativeMenuItem("Default notebook") { Menu = BuildJoplinNotebookSubmenu() });
+        m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.AuthToken) ? "No auth token set" : "Auth token is set"));
+        return m;
+    }
+
+    private NativeMenu BuildJoplinNotebookSubmenu()
+    {
+        var m = new NativeMenu();
+        var current = _config.Joplin.NotebookId ?? "";
+
+        var none = new NativeMenuItem("(Joplin's last-selected notebook)")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = current.Length == 0,
+        };
+        none.Click += (_, _) => SetJoplinNotebook("", "Joplin's last-selected notebook");
+        m.Add(none);
+
+        if (_notebooks.Count == 0)
+        {
+            m.Add(new NativeMenuItem("(run “Refresh projects, tags & notebooks”)") { IsEnabled = false });
+            return m;
+        }
+
+        m.Add(new NativeMenuItemSeparator());
+        foreach (var n in _notebooks.OrderBy(x => x.Title, StringComparer.OrdinalIgnoreCase))
+        {
+            var id = n.Id;
+            var title = n.Title;
+            var item = new NativeMenuItem(title)
+            {
+                ToggleType = NativeMenuItemToggleType.CheckBox,
+                IsChecked = id == current,
+            };
+            item.Click += (_, _) => SetJoplinNotebook(id, title);
+            m.Add(item);
+        }
+        return m;
+    }
+
     // ---- server lifecycle --------------------------------------------
 
     private async Task StartServerAsync(bool initial = false)
     {
         try
         {
-            _server = new WebhookServer(_config, _log, _captureTag, _outbox);
+            _server = new WebhookServer(_config, _log, _captureTag, _outbox, _classifier);
             _server.TaskCreated += OnTaskCreated;
             _server.WebhookFailed += OnWebhookFailed;
             _server.TaskQueued += OnTaskQueued;
@@ -303,6 +410,7 @@ public sealed class TrayController : IDisposable
             _log.Info("Config reloaded");
             _spHealth = SpHealth.Unknown;
             _captureTag = new CaptureTagResolver(_config.SuperProductivity, _log);
+            _classifier = new AiTaskClassifier(_config.AiClassifier, _log);
             ConfigureHealthTimer();
             ConfigureOutboxTimer();
             await StopServerAsync();
@@ -409,6 +517,21 @@ public sealed class TrayController : IDisposable
         if (projects is not null) _projects = projects;
         var tags = await FetchAsync(c => c.GetTagsAsync(), "tags", notifyOnError);
         if (tags is not null) _tags = tags;
+
+        if (!string.IsNullOrWhiteSpace(_config.Joplin.AuthToken))
+        {
+            try
+            {
+                using var joplin = new JoplinClient(_config.Joplin);
+                _notebooks = await joplin.GetFoldersAsync();
+            }
+            catch (Exception ex) when (ex is JoplinApiException or HttpRequestException or TaskCanceledException)
+            {
+                _log.Warn($"Couldn't load Joplin notebooks: {ex.Message}");
+                if (notifyOnError) Notify("Couldn't load Joplin notebooks", ex.Message, NotifyKind.Error);
+            }
+        }
+
         RebuildMenu();
     }
 
@@ -442,6 +565,56 @@ public sealed class TrayController : IDisposable
         var removed = tags.Remove(id);
         if (!removed) tags.Add(id);
         SaveConfig(removed ? $"removed default tag \"{label}\"" : $"added default tag \"{label}\"");
+    }
+
+    // ---- AI classifier / Joplin ---------------------------------------
+
+    private void ToggleAiEnabled()
+    {
+        var cfg = _config.AiClassifier;
+        cfg.Enabled = !cfg.Enabled;
+        SaveConfig($"AI classifier {(cfg.Enabled ? "enabled" : "disabled")}");
+    }
+
+    private async Task SetApiKeyAsync()
+    {
+        var value = await InputDialog.ShowAsync("Anthropic API key",
+            "Paste a new Anthropic API key. Leave blank to keep the current one.\n" +
+            "Get one at console.anthropic.com.");
+        if (value is null || value.Trim().Length == 0) return;
+
+        _config.AiClassifier.ApiKey = value.Trim();
+        SaveConfig("AI classifier API key updated");
+    }
+
+    private void SetAiModel(string id, string label)
+    {
+        _config.AiClassifier.Model = id;
+        SaveConfig($"AI classifier model = {label}");
+    }
+
+    private void ToggleJoplinEnabled()
+    {
+        var cfg = _config.Joplin;
+        cfg.Enabled = !cfg.Enabled;
+        SaveConfig($"Joplin notes {(cfg.Enabled ? "enabled" : "disabled")}");
+    }
+
+    private async Task SetJoplinTokenAsync()
+    {
+        var value = await InputDialog.ShowAsync("Joplin auth token",
+            "Paste the Web Clipper auth token from Joplin → Tools → Options → Web Clipper.\n" +
+            "Leave blank to keep the current one.");
+        if (value is null || value.Trim().Length == 0) return;
+
+        _config.Joplin.AuthToken = value.Trim();
+        SaveConfig("Joplin auth token updated");
+    }
+
+    private void SetJoplinNotebook(string id, string label)
+    {
+        _config.Joplin.NotebookId = id;
+        SaveConfig(id.Length == 0 ? "Joplin default notebook cleared" : $"Joplin default notebook = \"{label}\" [{id}]");
     }
 
     private void SaveConfig(string what)
