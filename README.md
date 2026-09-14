@@ -4,9 +4,9 @@
 
 A tray app (Avalonia, .NET 8, Windows + Linux) that turns [Pebble Index 01](https://repebble.com/index)
 voice notes into [Super Productivity](https://super-productivity.com/) tasks — and, optionally,
-lets Claude route each one further: shopping items split one-per-task, notes saved to
-[Joplin](https://joplinapp.org/), dated items added to Google Calendar, "send a message to X"
-sent through [Beeper](https://www.beeper.com/).
+lets an AI classifier (Claude, Gemini, OpenAI, or a local Ollama model) route each one further:
+shopping items split one-per-task, notes saved to [Joplin](https://joplinapp.org/), dated items
+added to Google Calendar, "send a message to X" sent through [Beeper](https://www.beeper.com/).
 
 ```
 Pebble Index 01 ──HTTPS──▶ your tunnel ──▶ Index2SP :8787/pebble ──▶ Super Productivity :3876
@@ -16,7 +16,7 @@ Pebble Index 01 ──HTTPS──▶ your tunnel ──▶ Index2SP :8787/pebble
 
 - Every note becomes an SP task — title from the transcription, full text + metadata in notes.
 - SP unreachable? Queued to a local outbox, retried until it lands.
-- With `aiClassifier` on, Claude also: picks project/tags, splits multi-item shopping lists,
+- With `aiClassifier` on, the AI also: picks project/tags, splits multi-item shopping lists,
   sets due dates, and — per destination toggle — files notes to Joplin, adds calendar events,
   or sends a Beeper message. **Beeper sends immediately, with no confirmation step.**
 - Uncaught errors are logged and reported as an SP task instead of crashing silently.
@@ -43,6 +43,12 @@ Tray → **Edit config…** opens `config.json` (`%APPDATA%\Index2SP\` on Window
 Super Productivity, AI classifier, Joplin, Google Calendar, Beeper — has its own tray submenu:
 enable, credentials, and **Test connection** (or **Test all connections** for one combined
 check). Full field reference: [`config.example.json`](config.example.json).
+
+**AI classifier → Provider** picks the backend: Claude, Gemini, OpenAI, or a local Ollama server.
+Each has its own credential/model submenu; only the selected provider's needs to be filled in.
+Ollama needs no key (just a server URL and a locally-pulled tool-calling model) but, unlike the
+three hosted providers, can't be forced to call the tool — an unsuited model may just not
+classify, falling back to the static config like any other failure.
 
 Two setups need an extra step first:
 

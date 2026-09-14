@@ -150,16 +150,42 @@ public sealed class AppConfig
     {
         public bool Enabled { get; set; } = false;
 
-        /// <summary>Anthropic API key. Get one at https://console.anthropic.com/ . Leave blank to
-        /// keep the classifier disabled even if Enabled is true.</summary>
+        /// <summary>Which backend to use: "claude" (default), "gemini", "openai", or "ollama".
+        /// Set from the tray (AI classifier → Provider). Unrecognized values fall back to
+        /// "claude". Each provider needs its own credential below before it will actually run.</summary>
+        public string Provider { get; set; } = "claude";
+
+        /// <summary>Anthropic API key. Get one at https://console.anthropic.com/ .</summary>
         public string ApiKey { get; set; } = "";
 
-        /// <summary>Model id. The default is fast and cheap — plenty for picking a project/tag
-        /// from a short list by title match.</summary>
+        /// <summary>Claude model id. The default is fast and cheap — plenty for picking a
+        /// project/tag from a short list by title match.</summary>
         public string Model { get; set; } = "claude-haiku-4-5";
 
-        /// <summary>Seconds to wait for Claude before giving up and using the static config.
-        /// Clamped to 2–30.</summary>
+        /// <summary>Google AI Studio API key. Get one at https://aistudio.google.com/apikey .</summary>
+        public string GeminiApiKey { get; set; } = "";
+
+        /// <summary>Gemini model id.</summary>
+        public string GeminiModel { get; set; } = "gemini-2.5-flash";
+
+        /// <summary>OpenAI API key. Get one at https://platform.openai.com/api-keys .</summary>
+        public string OpenAiApiKey { get; set; } = "";
+
+        /// <summary>OpenAI model id.</summary>
+        public string OpenAiModel { get; set; } = "gpt-4o-mini";
+
+        /// <summary>Local Ollama server (Tools → no API key needed — it's your own machine).</summary>
+        public string OllamaBaseUrl { get; set; } = "http://127.0.0.1:11434";
+
+        /// <summary>Model name as shown by `ollama list`. Blank disables the Ollama provider even
+        /// if selected — there's no sane default, since it depends entirely on what you've pulled
+        /// locally, and not every local model supports tool calling. Ollama also can't force a
+        /// tool call the way the hosted providers can, so a model that ignores the request just
+        /// falls back to the static config, same as any other classify failure.</summary>
+        public string OllamaModel { get; set; } = "";
+
+        /// <summary>Seconds to wait for the provider before giving up and using the static
+        /// config. Clamped to 2–30.</summary>
         public int TimeoutSeconds { get; set; } = 8;
 
         /// <summary>When true, the AI must pick at least one Super Productivity tag for every
@@ -263,6 +289,17 @@ public sealed class AppConfig
         if (OutboxMaxAttempts < 0) OutboxMaxAttempts = 0;
         AiClassifier ??= new AiClassifierConfig();
         AiClassifier.TimeoutSeconds = Math.Clamp(AiClassifier.TimeoutSeconds, 2, 30);
+        AiClassifier.Provider = AiClassifier.Provider?.Trim().ToLowerInvariant() switch
+        {
+            "gemini" => "gemini",
+            "openai" => "openai",
+            "ollama" => "ollama",
+            _ => "claude",
+        };
+        if (string.IsNullOrWhiteSpace(AiClassifier.GeminiModel)) AiClassifier.GeminiModel = "gemini-2.5-flash";
+        if (string.IsNullOrWhiteSpace(AiClassifier.OpenAiModel)) AiClassifier.OpenAiModel = "gpt-4o-mini";
+        if (string.IsNullOrWhiteSpace(AiClassifier.OllamaBaseUrl)) AiClassifier.OllamaBaseUrl = "http://127.0.0.1:11434";
+        AiClassifier.OllamaBaseUrl = AiClassifier.OllamaBaseUrl.TrimEnd('/');
         Joplin ??= new JoplinConfig();
         Joplin.TimeoutSeconds = Math.Clamp(Joplin.TimeoutSeconds, 2, 30);
         if (string.IsNullOrWhiteSpace(Joplin.BaseUrl)) Joplin.BaseUrl = "http://127.0.0.1:41184";

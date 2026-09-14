@@ -59,6 +59,26 @@ public sealed class TrayController : IDisposable
         ("claude-opus-5", "Opus (most capable)"),
     ];
 
+    private static readonly (string Id, string Label)[] GeminiModels =
+    [
+        ("gemini-2.5-flash", "Flash (fast, cheap — default)"),
+        ("gemini-2.5-pro", "Pro (most capable)"),
+    ];
+
+    private static readonly (string Id, string Label)[] OpenAiModels =
+    [
+        ("gpt-4o-mini", "GPT-4o mini (fast, cheap — default)"),
+        ("gpt-4o", "GPT-4o (more capable)"),
+    ];
+
+    private static readonly (string Id, string Label)[] AiProviders =
+    [
+        ("claude", "Claude"),
+        ("gemini", "Gemini"),
+        ("openai", "OpenAI"),
+        ("ollama", "Ollama (local)"),
+    ];
+
     public TrayController(IClassicDesktopStyleApplicationLifetime desktop, AppConfig config, string configPath, Logger log)
     {
         _desktop = desktop;
@@ -323,9 +343,11 @@ public sealed class TrayController : IDisposable
         enabled.Click += (_, _) => ToggleAiEnabled();
         m.Add(enabled);
 
-        m.Add(Action(string.IsNullOrWhiteSpace(cfg.ApiKey) ? "Set API key…" : "Change API key…",
-            () => _ = SetApiKeyAsync()));
-        m.Add(new NativeMenuItem("Model") { Menu = BuildAiModelSubmenu() });
+        m.Add(new NativeMenuItem("Provider") { Menu = BuildAiProviderSubmenu() });
+        m.Add(new NativeMenuItem("Claude") { Menu = BuildClaudeSubmenu() });
+        m.Add(new NativeMenuItem("Gemini") { Menu = BuildGeminiSubmenu() });
+        m.Add(new NativeMenuItem("OpenAI") { Menu = BuildOpenAiSubmenu() });
+        m.Add(new NativeMenuItem("Ollama") { Menu = BuildOllamaSubmenu() });
         m.Add(new NativeMenuItem("Shopping project") { Menu = BuildShoppingProjectSubmenu() });
         m.Add(new NativeMenuItemSeparator());
 
@@ -341,7 +363,122 @@ public sealed class TrayController : IDisposable
             : "Off: every task/note just gets its default tags"));
 
         m.Add(new NativeMenuItemSeparator());
+        m.Add(Disabled($"Using {DescribeProvider(cfg.Provider)} — {(HasCredentialFor(cfg.Provider) ? "credential is set" : "no credential set")}"));
+        return m;
+    }
+
+    private static string DescribeProvider(string provider) =>
+        AiProviders.FirstOrDefault(p => p.Id == provider).Label ?? "Claude";
+
+    private bool HasCredentialFor(string provider) => provider switch
+    {
+        "gemini" => !string.IsNullOrWhiteSpace(_config.AiClassifier.GeminiApiKey),
+        "openai" => !string.IsNullOrWhiteSpace(_config.AiClassifier.OpenAiApiKey),
+        "ollama" => !string.IsNullOrWhiteSpace(_config.AiClassifier.OllamaModel),
+        _ => !string.IsNullOrWhiteSpace(_config.AiClassifier.ApiKey),
+    };
+
+    private NativeMenu BuildAiProviderSubmenu()
+    {
+        var m = new NativeMenu();
+        var current = _config.AiClassifier.Provider;
+
+        foreach (var (id, label) in AiProviders)
+        {
+            var item = new NativeMenuItem(label)
+            {
+                ToggleType = NativeMenuItemToggleType.CheckBox,
+                IsChecked = id == current,
+            };
+            item.Click += (_, _) => SetAiProvider(id, label);
+            m.Add(item);
+        }
+        return m;
+    }
+
+    private NativeMenu BuildClaudeSubmenu()
+    {
+        var m = new NativeMenu();
+        var cfg = _config.AiClassifier;
+
+        m.Add(Action(string.IsNullOrWhiteSpace(cfg.ApiKey) ? "Set API key…" : "Change API key…",
+            () => _ = SetApiKeyAsync()));
+        m.Add(new NativeMenuItem("Model") { Menu = BuildAiModelSubmenu() });
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.ApiKey) ? "No API key set" : "API key is set"));
+        return m;
+    }
+
+    private NativeMenu BuildGeminiSubmenu()
+    {
+        var m = new NativeMenu();
+        var cfg = _config.AiClassifier;
+
+        m.Add(Action(string.IsNullOrWhiteSpace(cfg.GeminiApiKey) ? "Set API key…" : "Change API key…",
+            () => _ = SetGeminiApiKeyAsync()));
+        m.Add(new NativeMenuItem("Model") { Menu = BuildGeminiModelSubmenu() });
+        m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.GeminiApiKey) ? "No API key set" : "API key is set"));
+        return m;
+    }
+
+    private NativeMenu BuildOpenAiSubmenu()
+    {
+        var m = new NativeMenu();
+        var cfg = _config.AiClassifier;
+
+        m.Add(Action(string.IsNullOrWhiteSpace(cfg.OpenAiApiKey) ? "Set API key…" : "Change API key…",
+            () => _ = SetOpenAiApiKeyAsync()));
+        m.Add(new NativeMenuItem("Model") { Menu = BuildOpenAiModelSubmenu() });
+        m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.OpenAiApiKey) ? "No API key set" : "API key is set"));
+        return m;
+    }
+
+    private NativeMenu BuildOllamaSubmenu()
+    {
+        var m = new NativeMenu();
+        var cfg = _config.AiClassifier;
+
+        m.Add(Action("Set server URL…", () => _ = SetOllamaBaseUrlAsync()));
+        m.Add(Action(string.IsNullOrWhiteSpace(cfg.OllamaModel) ? "Set model name…" : "Change model name…",
+            () => _ = SetOllamaModelAsync()));
+        m.Add(Disabled($"Server: {cfg.OllamaBaseUrl}"));
+        m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.OllamaModel) ? "No model set" : $"Model: {cfg.OllamaModel}"));
+        m.Add(Disabled("Local model must support tool calling — can't be forced, falls back if ignored"));
+        return m;
+    }
+
+    private NativeMenu BuildGeminiModelSubmenu()
+    {
+        var m = new NativeMenu();
+        var current = _config.AiClassifier.GeminiModel;
+
+        foreach (var (id, label) in GeminiModels)
+        {
+            var item = new NativeMenuItem(label)
+            {
+                ToggleType = NativeMenuItemToggleType.CheckBox,
+                IsChecked = id == current,
+            };
+            item.Click += (_, _) => SetGeminiModel(id, label);
+            m.Add(item);
+        }
+        return m;
+    }
+
+    private NativeMenu BuildOpenAiModelSubmenu()
+    {
+        var m = new NativeMenu();
+        var current = _config.AiClassifier.OpenAiModel;
+
+        foreach (var (id, label) in OpenAiModels)
+        {
+            var item = new NativeMenuItem(label)
+            {
+                ToggleType = NativeMenuItemToggleType.CheckBox,
+                IsChecked = id == current,
+            };
+            item.Click += (_, _) => SetOpenAiModel(id, label);
+            m.Add(item);
+        }
         return m;
     }
 
@@ -1092,6 +1229,66 @@ public sealed class TrayController : IDisposable
     {
         _config.AiClassifier.Model = id;
         SaveConfig($"AI classifier model = {label}");
+    }
+
+    private void SetAiProvider(string id, string label)
+    {
+        _config.AiClassifier.Provider = id;
+        SaveConfig($"AI classifier provider = {label}");
+    }
+
+    private async Task SetGeminiApiKeyAsync()
+    {
+        var value = await InputDialog.ShowAsync("Google Gemini API key",
+            "Paste a Gemini API key from aistudio.google.com/apikey.\nLeave blank to keep the current one.");
+        if (value is null || value.Trim().Length == 0) return;
+
+        _config.AiClassifier.GeminiApiKey = value.Trim();
+        SaveConfig("Gemini API key updated");
+    }
+
+    private void SetGeminiModel(string id, string label)
+    {
+        _config.AiClassifier.GeminiModel = id;
+        SaveConfig($"Gemini model = {label}");
+    }
+
+    private async Task SetOpenAiApiKeyAsync()
+    {
+        var value = await InputDialog.ShowAsync("OpenAI API key",
+            "Paste an API key from platform.openai.com/api-keys.\nLeave blank to keep the current one.");
+        if (value is null || value.Trim().Length == 0) return;
+
+        _config.AiClassifier.OpenAiApiKey = value.Trim();
+        SaveConfig("OpenAI API key updated");
+    }
+
+    private void SetOpenAiModel(string id, string label)
+    {
+        _config.AiClassifier.OpenAiModel = id;
+        SaveConfig($"OpenAI model = {label}");
+    }
+
+    private async Task SetOllamaBaseUrlAsync()
+    {
+        var value = await InputDialog.ShowAsync("Ollama server URL",
+            "Paste the base URL of your Ollama server, e.g. http://127.0.0.1:11434.\n" +
+            "Leave blank to keep the current one.");
+        if (value is null || value.Trim().Length == 0) return;
+
+        _config.AiClassifier.OllamaBaseUrl = value.Trim();
+        SaveConfig("Ollama server URL updated");
+    }
+
+    private async Task SetOllamaModelAsync()
+    {
+        var value = await InputDialog.ShowAsync("Ollama model",
+            "Paste a model name as shown by `ollama list`, e.g. llama3.1.\n" +
+            "It must support tool calling. Leave blank to keep the current one.");
+        if (value is null || value.Trim().Length == 0) return;
+
+        _config.AiClassifier.OllamaModel = value.Trim();
+        SaveConfig("Ollama model updated");
     }
 
     private void ToggleRequireTags()

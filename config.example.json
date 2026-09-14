@@ -20,8 +20,15 @@
   },
   "aiClassifier": {
     "enabled": false,
+    "provider": "claude",
     "apiKey": "paste-an-anthropic-api-key-from-console.anthropic.com",
     "model": "claude-haiku-4-5",
+    "geminiApiKey": "paste-a-gemini-api-key-from-aistudio.google.com-apikey",
+    "geminiModel": "gemini-2.5-flash",
+    "openAiApiKey": "paste-an-openai-api-key-from-platform.openai.com-api-keys",
+    "openAiModel": "gpt-4o-mini",
+    "ollamaBaseUrl": "http://127.0.0.1:11434",
+    "ollamaModel": "",
     "timeoutSeconds": 8,
     "requireTags": false
   },
