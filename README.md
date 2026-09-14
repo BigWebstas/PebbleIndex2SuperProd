@@ -23,14 +23,17 @@ Pebble Index 01 ──HTTPS──▶ your tunnel ──▶ Index2SP :8787/pebble
   or sends a Beeper message. **Beeper sends immediately, with no confirmation step.**
 - Uncaught errors are logged and reported as an SP task instead of crashing silently.
   Integration outages get their own SP task too.
-- Checks GitHub for a newer release and flags it in the tray menu (no auto-download/install).
+- Checks GitHub for a newer release and flags it in the tray menu — downloads it on request,
+  nothing runs without you clicking it.
 
 ## Install
 
 Grab a [release](https://github.com/BigWebstas/PebbleIndex2SuperProd/releases/latest).
 
 - **Windows** — run the installer, or unzip the portable build.
-- **Linux** — extract the tarball, run `./install.sh` (or the binary directly).
+- **Linux** — several options per release: a `.tar.gz` (extract, run `./install.sh`), an
+  `.AppImage` (make executable, run), a `.deb`, or a `.rpm`. Arch users get a `PKGBUILD` instead
+  of a prebuilt package — `makepkg -si` it.
 
 ## Set up
 
@@ -80,8 +83,11 @@ own `server` example, faster-whisper-server, or LocalAI all work, since they sha
 always used when present, and this only fires for a genuinely audio-only webhook.
 
 **Check for updates automatically** (on by default, bottom of the tray menu) pings GitHub once a
-day; **Check for updates** runs it on demand. Either way it only ever shows a link — nothing is
-downloaded or installed for you.
+day; **Check for updates** runs it on demand. A found update can be downloaded straight from the
+tray — click it again once it's ready to install: Windows launches the installer (still its own
+click-through UI, and quits Index2SP first since the installer needs to replace the running exe);
+Linux extracts the tarball and opens the folder so you run `./install.sh` yourself. Nothing is
+ever downloaded or launched without you clicking it.
 
 ## Build from source
 

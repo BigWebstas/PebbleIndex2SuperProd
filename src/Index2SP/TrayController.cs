@@ -55,6 +55,8 @@ public sealed class TrayController : IDisposable
 
     private UpdateChecker.UpdateInfo? _updateAvailable;
     private bool _updateCheckInFlight;
+    private string? _downloadedUpdatePath;
+    private bool _updateDownloadInFlight;
     private readonly DispatcherTimer _updateTimer;
 
     private IReadOnlyList<SpNamedItem> _projects = Array.Empty<SpNamedItem>();
@@ -181,7 +183,15 @@ public sealed class TrayController : IDisposable
 
         if (_updateAvailable is { } update)
         {
-            menu.Add(Action($"⬆ Update available: v{update.Version}", () => OpenPath(update.Url)));
+            if (_downloadedUpdatePath is not null)
+                menu.Add(Action($"✓ v{update.Version} downloaded — click to install", LaunchDownloadedUpdate));
+            else if (_updateDownloadInFlight)
+                menu.Add(Disabled($"⬇ Downloading v{update.Version}…"));
+            else if (update.AssetUrl is not null)
+                menu.Add(Action($"⬆ Update available: v{update.Version} — click to download", () => _ = DownloadUpdateAsync(update)));
+            else
+                menu.Add(Action($"⬆ Update available: v{update.Version}", () => OpenPath(update.Url)));
+            menu.Add(Action("Open release page", () => OpenPath(update.Url)));
             menu.Add(new NativeMenuItemSeparator());
         }
 
@@ -1279,6 +1289,7 @@ public sealed class TrayController : IDisposable
             }
 
             var wasKnown = _updateAvailable is not null;
+            if (found?.Version != _updateAvailable?.Version) _downloadedUpdatePath = null;
             _updateAvailable = found;
 
             if (found is not null && !wasKnown)
@@ -1301,6 +1312,95 @@ public sealed class TrayController : IDisposable
         {
             _updateCheckInFlight = false;
         }
+    }
+
+    /// <summary>Downloads the release asset for this platform to a temp file. Doesn't install
+    /// anything — <see cref="LaunchDownloadedUpdate"/> is a separate, explicit step.</summary>
+    private async Task DownloadUpdateAsync(UpdateChecker.UpdateInfo update)
+    {
+        if (_updateDownloadInFlight) return;
+        _updateDownloadInFlight = true;
+        RebuildMenu();
+        try
+        {
+            using var checker = new UpdateChecker();
+            _log.Info($"Downloading update v{update.Version}…");
+            var path = await checker.DownloadAssetAsync(update);
+            _downloadedUpdatePath = path;
+            _log.Info($"Downloaded update to {path}");
+            Notify("Update ready", $"v{update.Version} downloaded — open the tray menu to install.", NotifyKind.Info, force: true);
+        }
+        catch (Exception ex) when (ex is UpdateCheckException or HttpRequestException or TaskCanceledException or IOException)
+        {
+            _log.Error("Update download failed", ex);
+            Notify("Download failed", ex.Message, NotifyKind.Error, force: true);
+        }
+        finally
+        {
+            _updateDownloadInFlight = false;
+            RebuildMenu();
+        }
+    }
+
+    /// <summary>
+    /// Windows: launches the downloaded installer normally — its own click-through UI still
+    /// applies, this just saves the trip to a browser. Since it may need to overwrite the running
+    /// exe, quits Index2SP right after handing off to it.
+    /// Linux: there's no unattended installer, so this extracts the tarball and opens the folder
+    /// so the user runs ./install.sh themselves, the same manual step as a browser download would
+    /// have needed anyway.
+    /// </summary>
+    private void LaunchDownloadedUpdate()
+    {
+        if (_downloadedUpdatePath is not { } path || !File.Exists(path))
+        {
+            Notify("Update", "Nothing downloaded yet.", NotifyKind.Error, force: true);
+            return;
+        }
+
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+                _log.Info($"Launched update installer: {path}");
+                _ = QuitAsync();
+            }
+            else
+            {
+                var dir = ExtractLinuxUpdateTarball(path);
+                _log.Info($"Extracted update to {dir}");
+                OpenPath(dir);
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Error("Couldn't launch the downloaded update", ex);
+            Notify("Couldn't launch update", ex.Message, NotifyKind.Error, force: true);
+        }
+    }
+
+    /// <summary>Extracts a downloaded .tar.gz next to itself (stripping the extension) via the
+    /// system `tar` — universally available on Linux, and already what the tarball itself was
+    /// built with, so no extra dependency for what's a one-off convenience extraction.</summary>
+    private static string ExtractLinuxUpdateTarball(string tarGzPath)
+    {
+        var dir = tarGzPath.EndsWith(".tar.gz", StringComparison.OrdinalIgnoreCase)
+            ? tarGzPath[..^".tar.gz".Length]
+            : tarGzPath + "-extracted";
+        Directory.CreateDirectory(dir);
+
+        using var proc = Process.Start(new ProcessStartInfo("tar")
+        {
+            ArgumentList = { "-xzf", tarGzPath, "-C", dir },
+            UseShellExecute = false,
+            RedirectStandardError = true,
+        }) ?? throw new IOException("Could not start tar.");
+        proc.WaitForExit();
+        if (proc.ExitCode != 0)
+            throw new IOException($"tar exited {proc.ExitCode}: {proc.StandardError.ReadToEnd()}");
+
+        return dir;
     }
 
     /// <summary>Only runs while the AI classifier is enabled and its selected provider has a

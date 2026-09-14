@@ -6,11 +6,13 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 bin_dir="${XDG_BIN_HOME:-$HOME/.local/bin}"
 apps_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+icons_dir="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/256x256/apps"
 cfg_dir="${XDG_CONFIG_HOME:-$HOME/.config}/Index2SP"
 
-mkdir -p "$bin_dir" "$apps_dir"
+mkdir -p "$bin_dir" "$apps_dir" "$icons_dir"
 install -m 0755 "$here/Index2SP" "$bin_dir/index2sp"
 sed "s|^Exec=.*|Exec=$bin_dir/index2sp|" "$here/index2sp.desktop" > "$apps_dir/index2sp.desktop"
+[ -f "$here/index2sp.png" ] && install -m 0644 "$here/index2sp.png" "$icons_dir/index2sp.png"
 
 echo "Installed: $bin_dir/index2sp"
 echo "Desktop entry: $apps_dir/index2sp.desktop"

@@ -26,6 +26,7 @@ pack() {
   cp "$root/README.md" "$out/"
   cp "$root/config.example.json" "$out/"
   cp "$root/packaging/linux/index2sp.desktop" "$out/"
+  cp "$root/packaging/linux/index2sp.png" "$out/"
   cp "$root/packaging/linux/install.sh" "$root/packaging/linux/uninstall.sh" "$out/"
   chmod +x "$out/install.sh" "$out/uninstall.sh"
 
