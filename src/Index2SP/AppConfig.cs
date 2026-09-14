@@ -48,6 +48,10 @@ public sealed class AppConfig
     /// to outbox\failed\. 0 = retry forever (the default).</summary>
     public int OutboxMaxAttempts { get; set; } = 0;
 
+    /// <summary>When true, periodically check GitHub for a newer release and surface it in the
+    /// tray menu. Never downloads or installs anything — just a heads-up with a link.</summary>
+    public bool CheckForUpdates { get; set; } = true;
+
     public SuperProductivityConfig SuperProductivity { get; set; } = new();
 
     public AiClassifierConfig AiClassifier { get; set; } = new();
@@ -181,6 +185,12 @@ public sealed class AppConfig
         /// Set from the tray (AI classifier → Provider). Unrecognized values fall back to
         /// "claude". Each provider needs its own credential below before it will actually run.</summary>
         public string Provider { get; set; } = "claude";
+
+        /// <summary>Optional second backend to try when <see cref="Provider"/> fails to classify
+        /// (no credential, network, timeout, or a malformed response) — same set of values as
+        /// <see cref="Provider"/>, or blank for none. Only tried once the primary has already
+        /// failed; if it also fails, the static config is used like any other classify failure.</summary>
+        public string FallbackProvider { get; set; } = "";
 
         /// <summary>Anthropic API key. Get one at https://console.anthropic.com/ .</summary>
         public string ApiKey { get; set; } = "";
@@ -330,6 +340,14 @@ public sealed class AppConfig
             "openai" => "openai",
             "ollama" => "ollama",
             _ => "claude",
+        };
+        AiClassifier.FallbackProvider = AiClassifier.FallbackProvider?.Trim().ToLowerInvariant() switch
+        {
+            "claude" => "claude",
+            "gemini" => "gemini",
+            "openai" => "openai",
+            "ollama" => "ollama",
+            _ => "",
         };
         if (string.IsNullOrWhiteSpace(AiClassifier.GeminiModel)) AiClassifier.GeminiModel = "gemini-2.5-flash";
         if (string.IsNullOrWhiteSpace(AiClassifier.OpenAiModel)) AiClassifier.OpenAiModel = "gpt-4o-mini";

@@ -9,6 +9,7 @@
   "outboxRetrySeconds": 60,
   "outboxMaxAttempts": 0,
   "testEventPhrase": "Index webhook test event",
+  "checkForUpdates": true,
   "superProductivity": {
     "baseUrl": "http://127.0.0.1:3876",
     "accessToken": "paste-token-from-SP-Settings-Misc-Local-REST-API",
@@ -21,6 +22,7 @@
   "aiClassifier": {
     "enabled": false,
     "provider": "claude",
+    "fallbackProvider": "",
     "apiKey": "paste-an-anthropic-api-key-from-console.anthropic.com",
     "model": "claude-haiku-4-5",
     "geminiApiKey": "paste-a-gemini-api-key-from-aistudio.google.com-apikey",

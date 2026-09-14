@@ -23,6 +23,7 @@ Pebble Index 01 ──HTTPS──▶ your tunnel ──▶ Index2SP :8787/pebble
   or sends a Beeper message. **Beeper sends immediately, with no confirmation step.**
 - Uncaught errors are logged and reported as an SP task instead of crashing silently.
   Integration outages get their own SP task too.
+- Checks GitHub for a newer release and flags it in the tray menu (no auto-download/install).
 
 ## Install
 
@@ -55,6 +56,9 @@ hosted providers, can't be forced to call the tool: an unsuited model may just n
 falling back to the static config like any other failure. The background health check and
 **Test all connections** cover whichever provider is currently selected too.
 
+**AI classifier → Fallback provider** tries a second backend when the primary one fails
+(no credential, network, timeout, bad response) before giving up and using the static config.
+
 By default a note/event/message is filed to Joplin/Calendar/Beeper **and** still becomes an SP
 task. **AI classifier → Route to one destination only** skips the SP task when that other
 destination actually succeeds, so you don't get both — falling back to the SP task if it fails.
@@ -72,6 +76,10 @@ own `server` example, faster-whisper-server, or LocalAI all work, since they sha
 `POST /v1/audio/transcriptions` contract. It's a fallback only: Pebble's own transcription is
 always used when present, and this only fires for a genuinely audio-only webhook.
 
+**Check for updates automatically** (on by default, bottom of the tray menu) pings GitHub once a
+day; **Check for updates** runs it on demand. Either way it only ever shows a link — nothing is
+downloaded or installed for you.
+
 ## Build from source
 
 ```bash
@@ -86,6 +94,8 @@ CI builds every push/PR; pushing a `v*` tag cuts a [GitHub Release](https://gith
 
 - Audio-only webhooks are rejected (422) — no text, no task — unless `whisper` is on.
 - No recurring tasks or subtasks (the SP REST API doesn't support them).
-- Outbox retries aren't deduplicated — a lost reply can occasionally create a duplicate.
+- Outbox retries check for an exact title+notes match before recreating a task, which covers a
+  lost reply after Super Productivity actually created it — but not two genuinely separate
+  duplicate files on disk.
 - No OS-level crash-restart — a hard crash stays down until you relaunch (in-process bugs are
   caught and don't crash the app; see above).

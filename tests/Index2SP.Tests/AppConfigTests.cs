@@ -137,4 +137,26 @@ public class AppConfigTests : IDisposable
 
         Assert.Equal("http://127.0.0.1:8000", config.Whisper.BaseUrl);
     }
+
+    [Fact]
+    public void LoadOrCreate_CheckForUpdatesDefaultsToTrue()
+    {
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.True(config.CheckForUpdates);
+    }
+
+    [Theory]
+    [InlineData("GEMINI", "gemini")]
+    [InlineData("openai", "openai")]
+    [InlineData("not-a-real-provider", "")]
+    [InlineData("", "")]
+    public void Normalize_FixesUpAiFallbackProvider(string input, string expected)
+    {
+        File.WriteAllText(ConfigPath, $$"""{ "aiClassifier": { "fallbackProvider": "{{input}}" } }""");
+
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.Equal(expected, config.AiClassifier.FallbackProvider);
+    }
 }

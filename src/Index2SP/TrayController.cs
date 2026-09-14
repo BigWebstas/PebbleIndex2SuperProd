@@ -52,6 +52,10 @@ public sealed class TrayController : IDisposable
     private SpHealth _whisperHealth = SpHealth.Unknown;
     private bool _whisperHealthCheckInFlight;
 
+    private UpdateChecker.UpdateInfo? _updateAvailable;
+    private bool _updateCheckInFlight;
+    private readonly DispatcherTimer _updateTimer;
+
     private IReadOnlyList<SpNamedItem> _projects = Array.Empty<SpNamedItem>();
     private IReadOnlyList<SpNamedItem> _tags = Array.Empty<SpNamedItem>();
     private IReadOnlyList<SpNamedItem> _notebooks = Array.Empty<SpNamedItem>();
@@ -123,12 +127,17 @@ public sealed class TrayController : IDisposable
         _outboxTimer.Tick += (_, _) => _ = FlushOutboxAsync();
         ConfigureOutboxTimer();
 
+        _updateTimer = new DispatcherTimer { Interval = TimeSpan.FromHours(24) };
+        _updateTimer.Tick += (_, _) => _ = RunUpdateCheckAsync(manual: false);
+        ConfigureUpdateTimer();
+
         RebuildMenu();
 
         // Start once the dispatcher loop is running so awaits resume on the UI thread.
         Dispatcher.UIThread.Post(() => _ = StartServerAsync(initial: true));
         // Drain anything left in the outbox from a previous run.
         Dispatcher.UIThread.Post(() => _ = FlushOutboxAsync());
+        Dispatcher.UIThread.Post(() => _ = RunUpdateCheckAsync(manual: false));
     }
 
     private void ConfigureHealthTimer()
@@ -140,6 +149,12 @@ public sealed class TrayController : IDisposable
             _healthTimer.Interval = TimeSpan.FromSeconds(seconds);
             _healthTimer.Start();
         }
+    }
+
+    private void ConfigureUpdateTimer()
+    {
+        _updateTimer.Stop();
+        if (_config.CheckForUpdates) _updateTimer.Start();
     }
 
     private void ConfigureOutboxTimer()
@@ -160,6 +175,12 @@ public sealed class TrayController : IDisposable
         menu.Add(Disabled(StatusLine()));
         menu.Add(Disabled($"Tasks created: {_created}   failed: {_failed}   queued: {queued}   tests: {_tests}"));
         menu.Add(new NativeMenuItemSeparator());
+
+        if (_updateAvailable is { } update)
+        {
+            menu.Add(Action($"⬆ Update available: v{update.Version}", () => OpenPath(update.Url)));
+            menu.Add(new NativeMenuItemSeparator());
+        }
 
         menu.Add(Action(_server?.IsRunning == true ? "Stop listener" : "Start listener",
             () => _ = ToggleServerAsync()));
@@ -190,6 +211,16 @@ public sealed class TrayController : IDisposable
 
         menu.Add(Action("View log", ShowLog));
         menu.Add(Action("Open log folder", () => OpenPath(_log.LogDirectory)));
+        menu.Add(new NativeMenuItemSeparator());
+
+        var checkUpdates = new NativeMenuItem("Check for updates automatically")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = _config.CheckForUpdates,
+        };
+        checkUpdates.Click += (_, _) => ToggleCheckForUpdates();
+        menu.Add(checkUpdates);
+        menu.Add(Action("Check for updates", () => _ = RunUpdateCheckAsync(manual: true)));
         menu.Add(new NativeMenuItemSeparator());
 
         menu.Add(Disabled($"Index2SP v{AppInfo.Version}"));
@@ -376,6 +407,7 @@ public sealed class TrayController : IDisposable
         m.Add(enabled);
 
         m.Add(new NativeMenuItem("Provider") { Menu = BuildAiProviderSubmenu() });
+        m.Add(new NativeMenuItem("Fallback provider") { Menu = BuildAiFallbackProviderSubmenu() });
         m.Add(new NativeMenuItem("Claude") { Menu = BuildClaudeSubmenu() });
         m.Add(new NativeMenuItem("Gemini") { Menu = BuildGeminiSubmenu() });
         m.Add(new NativeMenuItem("OpenAI") { Menu = BuildOpenAiSubmenu() });
@@ -408,6 +440,8 @@ public sealed class TrayController : IDisposable
         m.Add(new NativeMenuItemSeparator());
         m.Add(Action("Test connection", () => _ = RunAiHealthCheckAsync(manual: true)));
         m.Add(Disabled($"Using {DescribeProvider(cfg.Provider)} — {(HasCredentialFor(cfg.Provider) ? "credential is set" : "no credential set")}"));
+        if (!string.IsNullOrWhiteSpace(cfg.FallbackProvider))
+            m.Add(Disabled($"Falls back to {DescribeProvider(cfg.FallbackProvider)} if that fails"));
         return m;
     }
 
@@ -435,6 +469,34 @@ public sealed class TrayController : IDisposable
                 IsChecked = id == current,
             };
             item.Click += (_, _) => SetAiProvider(id, label);
+            m.Add(item);
+        }
+        return m;
+    }
+
+    private NativeMenu BuildAiFallbackProviderSubmenu()
+    {
+        var m = new NativeMenu();
+        var cfg = _config.AiClassifier;
+        var current = cfg.FallbackProvider;
+
+        var none = new NativeMenuItem("(None)")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = string.IsNullOrWhiteSpace(current),
+        };
+        none.Click += (_, _) => SetAiFallbackProvider("", "(None)");
+        m.Add(none);
+
+        foreach (var (id, label) in AiProviders)
+        {
+            if (id == cfg.Provider) continue; // falling back to the primary provider is a no-op
+            var item = new NativeMenuItem(label)
+            {
+                ToggleType = NativeMenuItemToggleType.CheckBox,
+                IsChecked = id == current,
+            };
+            item.Click += (_, _) => SetAiFallbackProvider(id, label);
             m.Add(item);
         }
         return m;
@@ -876,6 +938,7 @@ public sealed class TrayController : IDisposable
             _classifier = new AiTaskClassifier(_config.AiClassifier, _log);
             ConfigureHealthTimer();
             ConfigureOutboxTimer();
+            ConfigureUpdateTimer();
             await StopServerAsync();
             await StartServerAsync();
             Notify("Config reloaded", StatusLine(), NotifyKind.Info);
@@ -1169,6 +1232,55 @@ public sealed class TrayController : IDisposable
         finally
         {
             _whisperHealthCheckInFlight = false;
+        }
+    }
+
+    /// <summary>Checks GitHub for a newer release. Unlike the other checks here, a manual click
+    /// always runs even while automatic checking (<see cref="AppConfig.CheckForUpdates"/>) is
+    /// off — there's no credential gate, it's just a GitHub API call. Re-notifies only on the
+    /// transition into "an update exists", not on every recheck while one still does.</summary>
+    private async Task RunUpdateCheckAsync(bool manual)
+    {
+        if (!manual && !_config.CheckForUpdates) return;
+        if (!manual && _updateCheckInFlight) return;
+        _updateCheckInFlight = true;
+        try
+        {
+            UpdateChecker.UpdateInfo? found;
+            try
+            {
+                using var checker = new UpdateChecker();
+                found = await checker.CheckAsync();
+            }
+            catch (Exception ex) when (ex is UpdateCheckException or HttpRequestException or TaskCanceledException)
+            {
+                _log.Warn($"Update check failed: {ex.Message}");
+                if (manual) Notify("Check for updates", $"Couldn't check: {ex.Message}", NotifyKind.Error, force: true);
+                return;
+            }
+
+            var wasKnown = _updateAvailable is not null;
+            _updateAvailable = found;
+
+            if (found is not null && !wasKnown)
+            {
+                _log.Info($"Update available: v{found.Version}");
+                Notify("Update available", $"Index2SP v{found.Version} is available — see the tray menu.", NotifyKind.Info);
+                RefreshTray();
+            }
+            else if (found is null && wasKnown)
+            {
+                RefreshTray();
+            }
+
+            if (manual)
+                Notify(found is not null ? "Update available" : "Check for updates",
+                    found is not null ? $"v{found.Version} is available." : $"You're up to date (v{AppInfo.Version}).",
+                    NotifyKind.Info, force: true);
+        }
+        finally
+        {
+            _updateCheckInFlight = false;
         }
     }
 
@@ -1473,7 +1585,14 @@ public sealed class TrayController : IDisposable
     private void SetAiProvider(string id, string label)
     {
         _config.AiClassifier.Provider = id;
+        if (_config.AiClassifier.FallbackProvider == id) _config.AiClassifier.FallbackProvider = "";
         SaveConfig($"AI classifier provider = {label}");
+    }
+
+    private void SetAiFallbackProvider(string id, string label)
+    {
+        _config.AiClassifier.FallbackProvider = id;
+        SaveConfig($"AI classifier fallback provider = {label}");
     }
 
     private async Task SetGeminiApiKeyAsync()
@@ -1719,6 +1838,13 @@ public sealed class TrayController : IDisposable
         catch { return false; }
     }
 
+    private void ToggleCheckForUpdates()
+    {
+        _config.CheckForUpdates = !_config.CheckForUpdates;
+        ConfigureUpdateTimer();
+        SaveConfig($"Check for updates automatically {(_config.CheckForUpdates ? "enabled" : "disabled")}");
+    }
+
     private void ToggleStartup()
     {
         try
@@ -1816,6 +1942,7 @@ public sealed class TrayController : IDisposable
     {
         _healthTimer.Stop();
         _outboxTimer.Stop();
+        _updateTimer.Stop();
         await StopServerAsync();
         _tray.IsVisible = false;
         _desktop.Shutdown();
@@ -1871,6 +1998,7 @@ public sealed class TrayController : IDisposable
     {
         _healthTimer.Stop();
         _outboxTimer.Stop();
+        _updateTimer.Stop();
         try { StopServerAsync().GetAwaiter().GetResult(); } catch { /* shutting down */ }
         try { _tray.IsVisible = false; _tray.Dispose(); } catch { /* ignore */ }
         try { _logWindow?.Close(); } catch { /* ignore */ }

@@ -52,12 +52,39 @@ public sealed class AiTaskClassifier
         if (!_config.Enabled) return null;
         if (projects.Count == 0 && tags.Count == 0) return null;
 
-        var provider = _config.Provider;
-        if (!HasCredential(provider)) return null;
-
         var requireTags = _config.RequireTags;
         var fields = BuildFieldSpecs(requireTags, includeMessage);
         var prompt = BuildPrompt(transcription, projects, tags, joplinTags, requireTags, referenceTime, includeMessage);
+
+        var primary = _config.Provider;
+        var args = await TryClassifyWithProviderAsync(primary, prompt, fields, ct);
+
+        if (args is null)
+        {
+            var fallback = _config.FallbackProvider;
+            if (!string.IsNullOrWhiteSpace(fallback) && fallback != primary)
+            {
+                _log.Warn($"AI classify ({primary}) failed — trying fallback provider {fallback}");
+                args = await TryClassifyWithProviderAsync(fallback, prompt, fields, ct);
+            }
+        }
+
+        if (args is null)
+        {
+            _log.Warn("AI classify: no provider produced a usable result, using static config instead");
+            return null;
+        }
+
+        return BuildClassification(args, projects, tags, joplinTags, requireTags, includeMessage);
+    }
+
+    /// <summary>One provider attempt: null on any failure (no credential, network, timeout,
+    /// malformed response, or a response with no usable tool call) — never throws, so the caller
+    /// can try a fallback provider or give up.</summary>
+    private async Task<IReadOnlyDictionary<string, JsonElement>?> TryClassifyWithProviderAsync(
+        string provider, string prompt, List<FieldSpec> fields, CancellationToken ct)
+    {
+        if (!HasCredential(provider)) return null;
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(TimeSpan.FromSeconds(_config.TimeoutSeconds));
@@ -73,16 +100,13 @@ public sealed class AiTaskClassifier
             };
 
             if (args is null)
-            {
                 _log.Warn($"AI classify ({provider}): response had no usable tool call");
-                return null;
-            }
 
-            return BuildClassification(args, projects, tags, joplinTags, requireTags, includeMessage);
+            return args;
         }
         catch (Exception ex) when (ex is AnthropicException or HttpRequestException or OperationCanceledException or JsonException)
         {
-            _log.Warn($"AI classify ({provider}) failed, using static config instead: {ex.Message}");
+            _log.Warn($"AI classify ({provider}) failed: {ex.Message}");
             return null;
         }
     }

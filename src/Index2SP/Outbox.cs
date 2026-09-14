@@ -118,6 +118,20 @@ public sealed class Outbox
 
                 try
                 {
+                    // A queued item's original attempt may have actually created the task in Super
+                    // Productivity already — only its response was lost (dropped connection,
+                    // timeout after the server had already processed it). Check for an exact
+                    // title+notes match before retrying, so that case doesn't create a duplicate.
+                    var duplicateId = await FindDuplicateAsync(sp, item.Task, CancellationToken.None);
+                    if (duplicateId is not null)
+                    {
+                        TryDelete(file);
+                        _log.Info($"Skipped queued task — a matching task already exists in Super " +
+                                  $"Productivity ({duplicateId}): \"{item.Task.Title}\"");
+                        ItemDelivered?.Invoke(item.Task.Title, duplicateId);
+                        continue;
+                    }
+
                     // CancellationToken.None: a flaky tunnel disconnecting the original caller must
                     // not abort a delivery that would otherwise succeed. The HTTP client's own
                     // 15 s timeout bounds the call.
@@ -160,6 +174,24 @@ public sealed class Outbox
         finally
         {
             _flushGate.Release();
+        }
+    }
+
+    /// <summary>Exact title+notes match against Super Productivity's current tasks. Notes always
+    /// carries a "Recorded: &lt;timestamp&gt;" line from the original capture, so two genuinely
+    /// separate captures of the same words never collide here. Fails open — a failed check just
+    /// means the normal create attempt proceeds, never blocking delivery on this being unreachable.</summary>
+    private async Task<string?> FindDuplicateAsync(SuperProductivityClient sp, SpTaskRequest task, CancellationToken ct)
+    {
+        try
+        {
+            var existing = await sp.GetRecentTasksAsync(ct);
+            return existing.FirstOrDefault(t => t.Title == task.Title && t.Notes == task.Notes)?.Id;
+        }
+        catch (Exception ex) when (ex is SpApiException or HttpRequestException or TaskCanceledException)
+        {
+            _log.Warn($"Outbox duplicate check failed, continuing with normal delivery: {ex.Message}");
+            return null;
         }
     }
 

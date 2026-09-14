@@ -68,6 +68,40 @@ public sealed class SuperProductivityClient : IDisposable
     public Task<IReadOnlyList<SpNamedItem>> GetTagsAsync(CancellationToken ct = default)
         => GetNamedListAsync("tags", includeArchived: true, ct);
 
+    public sealed record SpTaskSummary(string Id, string Title, string? Notes);
+
+    /// <summary>Every task currently in Super Productivity, with title and notes — used only to
+    /// check for a duplicate before an outbox retry re-creates a task whose original response
+    /// was lost after Super Productivity actually created it.</summary>
+    public async Task<IReadOnlyList<SpTaskSummary>> GetRecentTasksAsync(CancellationToken ct = default)
+    {
+        using var resp = await _http.GetAsync("tasks", ct);
+        var body = await resp.Content.ReadAsStringAsync(ct);
+
+        if (resp.StatusCode == HttpStatusCode.Unauthorized)
+            throw new SpApiException("Super Productivity rejected the token (401) on GET /tasks.");
+        if (!resp.IsSuccessStatusCode)
+            throw new SpApiException($"GET /tasks returned HTTP {(int)resp.StatusCode}.");
+
+        JsonElement root;
+        try { root = JsonSerializer.Deserialize<JsonElement>(body, JsonOpts); }
+        catch (JsonException ex) { throw new SpApiException($"GET /tasks: could not parse response ({ex.Message})"); }
+
+        var arr = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var d) ? d : root;
+        if (arr.ValueKind != JsonValueKind.Array) return Array.Empty<SpTaskSummary>();
+
+        var list = new List<SpTaskSummary>();
+        foreach (var el in arr.EnumerateArray())
+        {
+            if (el.ValueKind != JsonValueKind.Object) continue;
+            if (!el.TryGetProperty("id", out var idEl) || idEl.GetString() is not { Length: > 0 } id) continue;
+            var title = el.TryGetProperty("title", out var tEl) ? tEl.GetString() ?? "" : "";
+            var notes = el.TryGetProperty("notes", out var nEl) ? nEl.GetString() : null;
+            list.Add(new SpTaskSummary(id, title, notes));
+        }
+        return list;
+    }
+
     private async Task<IReadOnlyList<SpNamedItem>> GetNamedListAsync(string path, bool includeArchived, CancellationToken ct)
     {
         using var resp = await _http.GetAsync(path, ct);
