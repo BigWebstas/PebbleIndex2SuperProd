@@ -581,6 +581,7 @@ public sealed class TrayController : IDisposable
         var cfg = _config.AiClassifier;
 
         m.Add(Action("Set server URL…", () => _ = SetOllamaBaseUrlAsync()));
+        m.Add(Action("Refresh models", () => _ = RefreshOllamaModelsAsync()));
         m.Add(new NativeMenuItem("Model") { Menu = BuildOllamaModelSubmenu() });
         m.Add(Disabled($"Server: {cfg.OllamaBaseUrl}"));
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.OllamaModel) ? "No model set" : $"Model: {cfg.OllamaModel}"));
@@ -595,7 +596,7 @@ public sealed class TrayController : IDisposable
 
         if (_ollamaModels.Count == 0)
         {
-            m.Add(new NativeMenuItem("(run “Refresh projects, tags & notebooks” with the server reachable)") { IsEnabled = false });
+            m.Add(new NativeMenuItem("(click “Refresh models” above, with the server URL set and reachable)") { IsEnabled = false });
             return m;
         }
 
@@ -1928,6 +1929,26 @@ public sealed class TrayController : IDisposable
 
         _config.AiClassifier.OllamaBaseUrl = value.Trim();
         SaveConfig("Ollama server URL updated");
+        _ = RefreshOllamaModelsAsync();
+    }
+
+    /// <summary>Fetches the model list for whatever Ollama server is currently configured,
+    /// regardless of Provider/OllamaModel state — unlike the general "Refresh projects, tags &amp;
+    /// notebooks" action, this always runs, since clicking it here is itself the signal the user
+    /// is actively setting Ollama up (can't pick a model you've never seen the list for).</summary>
+    private async Task RefreshOllamaModelsAsync()
+    {
+        try
+        {
+            using var ollama = new OllamaClient(_config.AiClassifier.OllamaBaseUrl, _config.AiClassifier.TimeoutSeconds);
+            _ollamaModels = await ollama.GetModelsAsync();
+            RebuildMenu();
+        }
+        catch (Exception ex) when (ex is OllamaApiException or HttpRequestException or TaskCanceledException)
+        {
+            _log.Warn($"Couldn't load Ollama models: {ex.Message}");
+            Notify("Couldn't load Ollama models", ex.Message, NotifyKind.Error, force: true);
+        }
     }
 
     private void SetOllamaModel(string id, string label)
