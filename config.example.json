@@ -30,7 +30,8 @@
     "ollamaBaseUrl": "http://127.0.0.1:11434",
     "ollamaModel": "",
     "timeoutSeconds": 8,
-    "requireTags": false
+    "requireTags": false,
+    "exclusiveRouting": false
   },
   "joplin": {
     "enabled": false,

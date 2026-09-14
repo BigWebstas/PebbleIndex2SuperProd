@@ -194,6 +194,14 @@ public sealed class AppConfig
         /// only if it still can't). When false, the AI isn't asked to pick tags at all — every
         /// task/note just gets the configured default tags.</summary>
         public bool RequireTags { get; set; } = false;
+
+        /// <summary>When true, a transcription routed to Joplin, Google Calendar, or Beeper (as
+        /// a note, calendar event, or message) skips the Super Productivity task as long as that
+        /// destination actually succeeds — avoiding a duplicate. If the destination attempt fails
+        /// (or its integration isn't enabled), the Super Productivity task is still created as a
+        /// fallback. Plain tasks and shopping-list items are unaffected — there's no other
+        /// destination for those. Off by default (current behaviour: always additive).</summary>
+        public bool ExclusiveRouting { get; set; } = false;
     }
 
     public sealed class SuperProductivityConfig

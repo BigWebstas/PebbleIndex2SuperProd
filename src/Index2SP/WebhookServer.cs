@@ -182,9 +182,17 @@ public sealed class WebhookServer : IAsyncDisposable
         // Not ctx.RequestAborted: if a slow tunnel drops the connection just as SP creates the
         // task, cancelling here would make us re-queue it and create a duplicate on retry. The
         // HTTP client's own 15 s timeout bounds the call.
-        List<string>? shoppingItems = null;
+        var routing = new AiRoutingResult(null, false);
         if (_config.AiClassifier.Enabled)
-            shoppingItems = await ApplyAiClassificationAsync(sp, taskReq, payload.Transcription!, payload.RecordedAt);
+            routing = await ApplyAiClassificationAsync(sp, taskReq, payload.Transcription!, payload.RecordedAt);
+        var shoppingItems = routing.ShoppingItems;
+
+        if (shoppingItems is null && routing.SkipSuperProductivityTask)
+        {
+            _log.Info($"Routed elsewhere, skipping Super Productivity task: \"{taskReq.Title}\"");
+            return Results.Json(new { ok = true, data = new { routedElsewhere = true } });
+        }
+
         await _captureTag.ApplyAsync(sp, taskReq, CancellationToken.None);
 
         if (shoppingItems is { Count: > 0 })
@@ -216,6 +224,12 @@ public sealed class WebhookServer : IAsyncDisposable
     }
 
     private sealed record TaskOutcome(string Title, string? TaskId, bool Queued, string? Error);
+
+    /// <summary>Result of AI classification: bare shopping items to split into separate tasks
+    /// (null when this isn't a multi-item shopping capture), and whether the main Super
+    /// Productivity task should be skipped because <see cref="AppConfig.AiClassifierConfig.ExclusiveRouting"/>
+    /// is on and the transcription was successfully routed to Joplin/Calendar/Beeper instead.</summary>
+    private sealed record AiRoutingResult(List<string>? ShoppingItems, bool SkipSuperProductivityTask);
 
     /// <summary>
     /// Creates one task in Super Productivity, or queues it in the outbox on a transient
@@ -271,7 +285,7 @@ public sealed class WebhookServer : IAsyncDisposable
     /// Returns the bare shopping items to split into separate tasks, or null when this isn't a
     /// multi-item shopping capture (the caller then uses taskReq as-is, title included).
     /// </summary>
-    private async Task<List<string>?> ApplyAiClassificationAsync(
+    private async Task<AiRoutingResult> ApplyAiClassificationAsync(
         SuperProductivityClient sp, SpTaskRequest taskReq, string transcription, DateTimeOffset? recordedAt)
     {
         try
@@ -299,11 +313,12 @@ public sealed class WebhookServer : IAsyncDisposable
             var referenceTime = (recordedAt ?? DateTimeOffset.UtcNow).ToLocalTime();
             var result = await _classifier.ClassifyAsync(
                 transcription, projects, tags, joplinTags, referenceTime, _config.Beeper.Enabled, CancellationToken.None);
-            if (result is null) return null;
+            if (result is null) return new AiRoutingResult(null, false);
 
             if (result.ProjectId is not null) taskReq.ProjectId = result.ProjectId;
             if (result.TagIds.Count > 0) taskReq.TagIds = result.TagIds;
 
+            var joplinSent = false;
             if (result.IsNote && _config.Joplin.Enabled)
             {
                 var joplinTagIds = result.JoplinTagIds.Count > 0 ? result.JoplinTagIds : _config.Joplin.DefaultTagIds;
@@ -314,13 +329,15 @@ public sealed class WebhookServer : IAsyncDisposable
                     .Where(title => title is not null)
                     .Select(title => title!)
                     .ToList();
-                await SendToJoplinAsync(taskReq.Title, taskReq.Notes ?? transcription, joplinTagTitles);
+                joplinSent = await SendToJoplinAsync(taskReq.Title, taskReq.Notes ?? transcription, joplinTagTitles);
             }
 
+            var calendarCreated = false;
             if (result.IsCalendarEvent && result.EventStart is not null)
             {
                 // Sets the SP task's own due date regardless of Google Calendar — the calendar
-                // event (below) is a separate, additive destination gated on its own toggle.
+                // event (below) is a separate, additive destination gated on its own toggle. Moot
+                // when ExclusiveRouting ends up skipping the task entirely, but harmless either way.
                 if (result.EventAllDay)
                 {
                     taskReq.DueDay = result.EventStart.Value.ToString("yyyy-MM-dd");
@@ -333,16 +350,23 @@ public sealed class WebhookServer : IAsyncDisposable
 
                 if (_config.GoogleCalendar.Enabled)
                 {
-                    await CreateCalendarEventAsync(
+                    calendarCreated = await CreateCalendarEventAsync(
                         result.EventTitle ?? taskReq.Title, taskReq.Notes ?? transcription,
                         result.EventStart.Value, result.EventEnd, result.EventAllDay);
                 }
             }
 
+            var messageSent = false;
             if (result.IsMessage && _config.Beeper.Enabled && result.MessageRecipient is not null && result.MessageText is not null)
-                await SendBeeperMessageAsync(result.MessageRecipient, result.MessageText);
+                messageSent = await SendBeeperMessageAsync(result.MessageRecipient, result.MessageText, result.MessagePlatform);
 
-            if (!result.IsShopping) return null;
+            if (!result.IsShopping)
+            {
+                // Skip the Super Productivity task only when routing elsewhere actually worked —
+                // a failed/disabled destination still falls back to the normal SP task below.
+                var skip = _config.AiClassifier.ExclusiveRouting && (joplinSent || calendarCreated || messageSent);
+                return new AiRoutingResult(null, skip);
+            }
 
             // A configured shopping project always wins over the classifier's own pick —
             // it's an explicit user choice, not a guess from project titles.
@@ -350,61 +374,70 @@ public sealed class WebhookServer : IAsyncDisposable
             if (!string.IsNullOrWhiteSpace(shoppingProjectId))
                 taskReq.ProjectId = shoppingProjectId.Trim();
 
-            return result.ShoppingItems.Count > 0 ? result.ShoppingItems : null;
+            return new AiRoutingResult(result.ShoppingItems.Count > 0 ? result.ShoppingItems : null, false);
         }
         catch (Exception ex) when (ex is SpApiException or HttpRequestException or TaskCanceledException)
         {
             _log.Warn($"AI classify skipped (couldn't load projects/tags): {ex.Message}");
-            return null;
+            return new AiRoutingResult(null, false);
         }
     }
 
     /// <summary>
     /// Best-effort archive copy in Joplin for transcriptions the classifier marked as a note.
-    /// Purely additive — the Super Productivity task is created either way, so any failure here
-    /// is just logged and never surfaces to the webhook caller.
+    /// Normally additive — the Super Productivity task is created either way — but with
+    /// aiClassifier.exclusiveRouting on, a true result here tells the caller to skip that task
+    /// instead. Any failure is just logged and never surfaces to the webhook caller.
     /// </summary>
-    private async Task SendToJoplinAsync(string title, string body, IReadOnlyList<string>? tagTitles)
+    private async Task<bool> SendToJoplinAsync(string title, string body, IReadOnlyList<string>? tagTitles)
     {
         try
         {
             using var joplin = new JoplinClient(_config.Joplin);
             await joplin.CreateNoteAsync(title, body, tagTitles, CancellationToken.None);
             _log.Info($"Sent note to Joplin: \"{title}\"" + (tagTitles is { Count: > 0 } ? $" [{string.Join(',', tagTitles)}]" : ""));
+            return true;
         }
         catch (Exception ex) when (ex is JoplinApiException or HttpRequestException or TaskCanceledException)
         {
-            _log.Warn($"Could not send note to Joplin (task was still created): {ex.Message}");
+            _log.Warn($"Could not send note to Joplin: {ex.Message}");
+            return false;
         }
     }
 
     /// <summary>
     /// Best-effort calendar event for transcriptions the classifier marked as dated/timed.
-    /// Purely additive — the Super Productivity task is created either way, so any failure here
-    /// is just logged and never surfaces to the webhook caller.
+    /// Normally additive — the Super Productivity task is created either way — but with
+    /// aiClassifier.exclusiveRouting on, a true result here tells the caller to skip that task
+    /// instead. Any failure is just logged and never surfaces to the webhook caller.
     /// </summary>
-    private async Task CreateCalendarEventAsync(string title, string description, DateTimeOffset start, DateTimeOffset? end, bool allDay)
+    private async Task<bool> CreateCalendarEventAsync(string title, string description, DateTimeOffset start, DateTimeOffset? end, bool allDay)
     {
         try
         {
             using var calendar = new GoogleCalendarClient(_config.GoogleCalendar);
             await calendar.CreateEventAsync(title, description, start, end, allDay, CancellationToken.None);
             _log.Info($"Created Google Calendar event: \"{title}\" at {start:yyyy-MM-dd HH:mm zzz}" + (allDay ? " (all day)" : ""));
+            return true;
         }
         catch (Exception ex) when (ex is GoogleCalendarApiException or HttpRequestException or TaskCanceledException)
         {
-            _log.Warn($"Could not create Google Calendar event (task was still created): {ex.Message}");
+            _log.Warn($"Could not create Google Calendar event: {ex.Message}");
+            return false;
         }
     }
 
     /// <summary>
     /// Best-effort chat message via Beeper Desktop, to whichever network (Telegram, WhatsApp,
-    /// iMessage, etc.) the recipient's chat already uses. Purely additive — the Super
-    /// Productivity task is created either way. Never guesses: sends only when the recipient
-    /// name matches exactly one existing single-person chat, to avoid messaging the wrong
-    /// person on an ambiguous or missing match.
+    /// iMessage, etc.) the recipient's chat already uses. Normally additive — the Super
+    /// Productivity task is created either way — but with aiClassifier.exclusiveRouting on, a
+    /// true result here tells the caller to skip that task instead. Never guesses: when
+    /// <paramref name="platform"/> is given (e.g. "telegram"), only chats on that platform are
+    /// considered — this is what disambiguates a recipient with several chats down to the one the
+    /// user actually named. Anything left ambiguous, or a named platform with no matching chat,
+    /// counts as failure, so the Super Productivity task still gets created as a fallback.
     /// </summary>
-    private async Task SendBeeperMessageAsync(string recipient, string text)
+    private async Task<bool> SendBeeperMessageAsync(string recipient, string text, string? platform)
     {
         try
         {
@@ -414,22 +447,37 @@ public sealed class WebhookServer : IAsyncDisposable
             if (matches.Count == 0)
             {
                 _log.Warn($"Beeper message skipped: no chat found matching \"{recipient}\"");
-                return;
-            }
-            if (matches.Count > 1)
-            {
-                _log.Warn($"Beeper message skipped: \"{recipient}\" matches {matches.Count} chats " +
-                          $"({string.Join(", ", matches.Select(m => $"{m.Title} [{m.Network}]"))}) — ambiguous, not sending");
-                return;
+                return false;
             }
 
-            var chat = matches[0];
+            var candidates = matches;
+            if (!string.IsNullOrWhiteSpace(platform))
+            {
+                candidates = matches.Where(m => BeeperClient.NetworkMatchesPlatform(m.Network, platform)).ToList();
+                if (candidates.Count == 0)
+                {
+                    _log.Warn($"Beeper message skipped: \"{recipient}\" has no {platform} chat " +
+                              $"(has: {string.Join(", ", matches.Select(m => m.Network))}) — not sending");
+                    return false;
+                }
+            }
+
+            if (candidates.Count > 1)
+            {
+                _log.Warn($"Beeper message skipped: \"{recipient}\" matches {candidates.Count} chats " +
+                          $"({string.Join(", ", candidates.Select(m => $"{m.Title} [{m.Network}]"))}) — ambiguous, not sending");
+                return false;
+            }
+
+            var chat = candidates[0];
             await beeper.SendMessageAsync(chat.ChatId, text, CancellationToken.None);
             _log.Info($"Sent Beeper message to {chat.Title} [{chat.Network}]: \"{text}\"");
+            return true;
         }
         catch (Exception ex) when (ex is BeeperApiException or HttpRequestException or TaskCanceledException)
         {
-            _log.Warn($"Could not send Beeper message to \"{recipient}\" (task was still created): {ex.Message}");
+            _log.Warn($"Could not send Beeper message to \"{recipient}\": {ex.Message}");
+            return false;
         }
     }
 

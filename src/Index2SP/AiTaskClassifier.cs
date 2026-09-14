@@ -30,7 +30,7 @@ public sealed class AiTaskClassifier
     public sealed record Classification(
         string? ProjectId, List<string> TagIds, bool IsNote, bool IsShopping, List<string> ShoppingItems, List<string> JoplinTagIds,
         bool IsCalendarEvent, string? EventTitle, DateTimeOffset? EventStart, DateTimeOffset? EventEnd, bool EventAllDay,
-        bool IsMessage, string? MessageRecipient, string? MessageText);
+        bool IsMessage, string? MessageRecipient, string? MessageText, string? MessagePlatform);
 
     /// <param name="joplinTags">Existing Joplin tags, only consulted (and only asked of the AI)
     /// while <see cref="AppConfig.AiClassifierConfig.RequireTags"/> is on. Pass an empty list
@@ -416,6 +416,10 @@ public sealed class AiTaskClassifier
             fields.Add(new("messageText", FieldKind.StringOrNull, "Required when isMessage is true: just " +
                 "the message content to send, stripped of phrasing like \"send a message to X say\" or " +
                 "\"tell X\" — e.g. \"hello\" from \"send a message to Abbie say hello\". Null otherwise."));
+            fields.Add(new("messagePlatform", FieldKind.StringOrNull, "Only when isMessage is true and a " +
+                "specific messaging app was named, e.g. \"telegram\", \"whatsapp\", \"signal\", \"imessage\", " +
+                "\"google messages\", \"instagram\" — from phrasing like \"message Abbie on Telegram\" or " +
+                "\"text Abbie on WhatsApp\". Null when no platform was mentioned."));
         }
 
         return fields;
@@ -536,6 +540,7 @@ public sealed class AiTaskClassifier
         var isMessage = false;
         string? messageRecipient = null;
         string? messageText = null;
+        string? messagePlatform = null;
         if (includeMessage)
         {
             isMessage = input.TryGetValue("isMessage", out var imEl) && imEl.ValueKind == JsonValueKind.True;
@@ -545,6 +550,10 @@ public sealed class AiTaskClassifier
             messageText = input.TryGetValue("messageText", out var mtEl) && mtEl.ValueKind == JsonValueKind.String
                 ? mtEl.GetString()
                 : null;
+            messagePlatform = input.TryGetValue("messagePlatform", out var mpEl) && mpEl.ValueKind == JsonValueKind.String
+                ? mpEl.GetString()
+                : null;
+            if (string.IsNullOrWhiteSpace(messagePlatform)) messagePlatform = null;
             // A message needs both a recipient and something to say to be usable.
             if (isMessage && (string.IsNullOrWhiteSpace(messageRecipient) || string.IsNullOrWhiteSpace(messageText)))
                 isMessage = false;
@@ -558,10 +567,10 @@ public sealed class AiTaskClassifier
                   $"isNote={isNote}, isShopping={isShopping}, shoppingItems=[{string.Join(',', shoppingItems)}], " +
                   $"joplinTags=[{string.Join(',', resolvedJoplinTagIds)}], isCalendarEvent={isCalendarEvent}" +
                   (isCalendarEvent ? $", eventStart={eventStart:O}" : "") +
-                  $", isMessage={isMessage}" + (isMessage ? $", messageRecipient={messageRecipient}" : ""));
+                  $", isMessage={isMessage}" + (isMessage ? $", messageRecipient={messageRecipient}, messagePlatform={messagePlatform ?? "(any)"}" : ""));
 
         return new Classification(resolvedProjectId, resolvedTagIds, isNote, isShopping, shoppingItems, resolvedJoplinTagIds,
-            isCalendarEvent, eventTitle, eventStart, eventEnd, eventAllDay, isMessage, messageRecipient, messageText);
+            isCalendarEvent, eventTitle, eventStart, eventEnd, eventAllDay, isMessage, messageRecipient, messageText, messagePlatform);
     }
 
     private static DateTimeOffset? ReadDateTimeOffset(IReadOnlyDictionary<string, JsonElement> input, string key)
@@ -623,7 +632,8 @@ public sealed class AiTaskClassifier
         if (includeMessage)
             sb.Append("Also decide whether this is a request to send a chat message to someone right now " +
                       "(e.g. \"send a message to Abbie say hello\", \"tell Abbie I'll be late\") and set " +
-                      "isMessage, messageRecipient, and messageText accordingly (see their descriptions).\n");
+                      "isMessage, messageRecipient, messageText, and messagePlatform accordingly (see their " +
+                      "descriptions) — messagePlatform only when a specific app like Telegram or WhatsApp was named.\n");
 
         sb.Append('\n');
         sb.Append("Projects:\n");

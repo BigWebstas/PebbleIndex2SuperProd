@@ -106,6 +106,52 @@ public sealed class BeeperClient : IDisposable
 
     private static string Truncate(string s) => s.Length > 300 ? s[..300] + "…" : s;
 
+    /// <summary>Maps a chat's raw Beeper network id (e.g. "telegram", "gmessages", or a per-account
+    /// id like "local-instagram_ba_63lrIy-...") to the words a person might actually say for it.
+    /// Used to pick the right chat when the AI classifier heard a specific platform named
+    /// alongside the recipient (e.g. "message Abbie on Telegram").</summary>
+    private static readonly Dictionary<string, string[]> ProviderAliases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["telegram"] = new[] { "telegram" },
+        ["whatsapp"] = new[] { "whatsapp" },
+        ["signal"] = new[] { "signal" },
+        ["imessage"] = new[] { "imessage", "apple messages" },
+        ["gmessages"] = new[] { "google messages", "android messages" },
+        ["googlechat"] = new[] { "google chat", "hangouts" },
+        ["gvoice"] = new[] { "google voice" },
+        ["facebookgo"] = new[] { "facebook", "messenger", "facebook messenger" },
+        ["instagram"] = new[] { "instagram" },
+        ["linkedin"] = new[] { "linkedin" },
+        ["twitter"] = new[] { "twitter", "x" },
+        ["matrix"] = new[] { "beeper" },
+        ["discord"] = new[] { "discord" },
+        ["slack"] = new[] { "slack" },
+    };
+
+    /// <summary>True when <paramref name="platformQuery"/> (free text the AI extracted, e.g.
+    /// "telegram" or "google messages") names the same provider as <paramref name="network"/>
+    /// (a <see cref="ChatMatch.Network"/> value).</summary>
+    public static bool NetworkMatchesPlatform(string network, string platformQuery)
+    {
+        var slug = ProviderSlug(network);
+        var aliases = ProviderAliases.TryGetValue(slug, out var known) ? known : new[] { slug };
+        var query = Normalize(platformQuery);
+        return aliases.Any(a => Normalize(a) == query);
+    }
+
+    /// <summary>Strips Beeper's "local-" multi-account prefix and trailing account-id suffix
+    /// (e.g. "local-instagram_ba_63lrIy-..." -&gt; "instagram") to get the underlying provider.</summary>
+    private static string ProviderSlug(string network)
+    {
+        var s = network;
+        if (s.StartsWith("local-", StringComparison.OrdinalIgnoreCase)) s = s["local-".Length..];
+        var underscore = s.IndexOf('_');
+        if (underscore > 0) s = s[..underscore];
+        return s.ToLowerInvariant();
+    }
+
+    private static string Normalize(string s) => new(s.ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
+
     public void Dispose() => _http.Dispose();
 }
 

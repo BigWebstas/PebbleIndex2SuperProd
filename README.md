@@ -53,11 +53,17 @@ hosted providers, can't be forced to call the tool: an unsuited model may just n
 falling back to the static config like any other failure. The background health check and
 **Test all connections** cover whichever provider is currently selected too.
 
+By default a note/event/message is filed to Joplin/Calendar/Beeper **and** still becomes an SP
+task. **AI classifier → Route to one destination only** skips the SP task when that other
+destination actually succeeds, so you don't get both — falling back to the SP task if it fails.
+
 Two setups need an extra step first:
 
 - **Google Calendar** — create a Google Cloud OAuth client (type **Desktop app**), paste its
   ID/secret into the tray, then **Connect…** for a one-time browser sign-in.
 - **Beeper** — create a personal access token in Beeper Desktop's API settings, paste it in.
+  Naming a platform ("text Abbie on Telegram") picks that chat when the recipient has several;
+  with no platform named, it only sends when the recipient matches exactly one chat.
 
 ## Build from source
 

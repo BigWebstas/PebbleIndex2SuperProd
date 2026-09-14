@@ -378,6 +378,17 @@ public sealed class TrayController : IDisposable
             ? "On: must pick an SP tag, and a Joplin tag for notes"
             : "Off: every task/note just gets its default tags"));
 
+        var exclusiveRouting = new NativeMenuItem("Route to one destination only")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = cfg.ExclusiveRouting,
+        };
+        exclusiveRouting.Click += (_, _) => ToggleExclusiveRouting();
+        m.Add(exclusiveRouting);
+        m.Add(Disabled(cfg.ExclusiveRouting
+            ? "On: Joplin/Calendar/Beeper skip the SP task; SP is the fallback if it fails"
+            : "Off: SP task is always created too, alongside Joplin/Calendar/Beeper"));
+
         m.Add(new NativeMenuItemSeparator());
         m.Add(Action("Test connection", () => _ = RunAiHealthCheckAsync(manual: true)));
         m.Add(Disabled($"Using {DescribeProvider(cfg.Provider)} — {(HasCredentialFor(cfg.Provider) ? "credential is set" : "no credential set")}"));
@@ -1415,6 +1426,13 @@ public sealed class TrayController : IDisposable
         var cfg = _config.AiClassifier;
         cfg.RequireTags = !cfg.RequireTags;
         SaveConfig($"AI classifier require-at-least-one-tag {(cfg.RequireTags ? "enabled" : "disabled")}");
+    }
+
+    private void ToggleExclusiveRouting()
+    {
+        var cfg = _config.AiClassifier;
+        cfg.ExclusiveRouting = !cfg.ExclusiveRouting;
+        SaveConfig($"AI classifier exclusive routing {(cfg.ExclusiveRouting ? "enabled" : "disabled")}");
     }
 
     private void ToggleJoplinEnabled()
