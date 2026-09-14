@@ -65,11 +65,15 @@
   },
   "webSearch": {
     "enabled": false,
-    "beeperRecipient": "",
     "maxUses": 3
   },
   "webhookReceipt": {
+    "enabled": false
+  },
+  "telegram": {
     "enabled": false,
-    "beeperRecipient": ""
+    "botToken": "paste-a-bot-token-from-BotFather",
+    "chatId": "",
+    "timeoutSeconds": 8
   }
 }

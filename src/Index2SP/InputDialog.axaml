@@ -7,7 +7,7 @@
         Title="Index2SP">
   <StackPanel Margin="16" Spacing="10">
     <TextBlock x:Name="PromptText" TextWrapping="Wrap" />
-    <TextBox x:Name="ValueBox" PasswordChar="•" />
+    <TextBox x:Name="ValueBox" />
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
       <Button x:Name="CancelBtn" Content="Cancel" />
       <Button x:Name="OkBtn" Content="OK" IsDefault="True" />

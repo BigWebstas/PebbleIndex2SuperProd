@@ -47,6 +47,9 @@ public sealed class TrayController : IDisposable
     private SpHealth _beeperHealth = SpHealth.Unknown;
     private bool _beeperHealthCheckInFlight;
 
+    private SpHealth _telegramHealth = SpHealth.Unknown;
+    private bool _telegramHealthCheckInFlight;
+
     private SpHealth _aiHealth = SpHealth.Unknown;
     private bool _aiHealthCheckInFlight;
 
@@ -123,6 +126,7 @@ public sealed class TrayController : IDisposable
             await RunJoplinHealthCheckAsync(manual: false);
             await RunGoogleCalendarHealthCheckAsync(manual: false);
             await RunBeeperHealthCheckAsync(manual: false);
+            await RunTelegramHealthCheckAsync(manual: false);
             await RunAiHealthCheckAsync(manual: false);
             await RunWhisperHealthCheckAsync(manual: false);
         };
@@ -207,6 +211,7 @@ public sealed class TrayController : IDisposable
         menu.Add(new NativeMenuItem("Joplin notes") { Menu = BuildJoplinSubmenu() });
         menu.Add(new NativeMenuItem("Google Calendar") { Menu = BuildGoogleCalendarSubmenu() });
         menu.Add(new NativeMenuItem("Beeper messages") { Menu = BuildBeeperSubmenu() });
+        menu.Add(new NativeMenuItem("Telegram bot") { Menu = BuildTelegramSubmenu() });
         menu.Add(new NativeMenuItem("Whisper transcription") { Menu = BuildWhisperSubmenu() });
         menu.Add(new NativeMenuItem("Web search") { Menu = BuildWebSearchSubmenu() });
         menu.Add(new NativeMenuItem("Webhook receipt") { Menu = BuildWebhookReceiptSubmenu() });
@@ -295,6 +300,17 @@ public sealed class TrayController : IDisposable
                 _ => "Beeper not checked yet",
             };
             line += $"  ·  {beeper}";
+        }
+
+        if (_config.Telegram.Enabled)
+        {
+            var telegram = _telegramHealth switch
+            {
+                SpHealth.Ok => "Telegram reachable",
+                SpHealth.Unreachable => "Telegram unreachable",
+                _ => "Telegram not checked yet",
+            };
+            line += $"  ·  {telegram}";
         }
 
         if (_config.AiClassifier.Enabled)
@@ -863,6 +879,30 @@ public sealed class TrayController : IDisposable
         return m;
     }
 
+    private NativeMenu BuildTelegramSubmenu()
+    {
+        var m = new NativeMenu();
+        var cfg = _config.Telegram;
+
+        var enabled = new NativeMenuItem("Enabled")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = cfg.Enabled,
+        };
+        enabled.Click += (_, _) => ToggleTelegramEnabled();
+        m.Add(enabled);
+
+        m.Add(Action(string.IsNullOrWhiteSpace(cfg.BotToken) ? "Set bot token…" : "Change bot token…",
+            () => _ = SetTelegramBotTokenAsync()));
+        m.Add(Action(string.IsNullOrWhiteSpace(cfg.ChatId) ? "Set chat ID…" : "Change chat ID…",
+            () => _ = SetTelegramChatIdAsync()));
+        m.Add(Action("Test connection", () => _ = RunTelegramHealthCheckAsync(manual: true)));
+        m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.BotToken) ? "No bot token set" : "Bot token is set"));
+        m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.ChatId) ? "No chat ID set" : $"Chat ID: {cfg.ChatId}"));
+        m.Add(Disabled("Used by web search and webhook receipt — not the general Beeper message feature"));
+        return m;
+    }
+
     private NativeMenu BuildWhisperSubmenu()
     {
         var m = new NativeMenu();
@@ -898,10 +938,8 @@ public sealed class TrayController : IDisposable
         enabled.Click += (_, _) => ToggleWebSearchEnabled();
         m.Add(enabled);
 
-        m.Add(Action(string.IsNullOrWhiteSpace(cfg.BeeperRecipient) ? "Set Beeper recipient…" : "Change Beeper recipient…",
-            () => _ = SetWebSearchRecipientAsync()));
-        m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.BeeperRecipient) ? "No recipient set" : $"Recipient: {cfg.BeeperRecipient}"));
-        m.Add(Disabled("Searches via Claude's web search tool — needs a Claude API key and Beeper enabled"));
+        m.Add(Disabled("Searches via Claude's web search tool, sent through the Telegram bot below"));
+        m.Add(Disabled("Needs a Claude API key and Telegram enabled"));
         return m;
     }
 
@@ -918,10 +956,8 @@ public sealed class TrayController : IDisposable
         enabled.Click += (_, _) => ToggleWebhookReceiptEnabled();
         m.Add(enabled);
 
-        m.Add(Action(string.IsNullOrWhiteSpace(cfg.BeeperRecipient) ? "Set Beeper recipient…" : "Change Beeper recipient…",
-            () => _ = SetWebhookReceiptRecipientAsync()));
-        m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.BeeperRecipient) ? "No recipient set" : $"Recipient: {cfg.BeeperRecipient}"));
-        m.Add(Disabled("Sends \"Webhook Received, ...\" for every capture — needs Beeper enabled"));
+        m.Add(Disabled("Sends \"Webhook Received, ...\" for every capture through the Telegram bot below"));
+        m.Add(Disabled("Needs Telegram enabled"));
         return m;
     }
 
@@ -943,6 +979,7 @@ public sealed class TrayController : IDisposable
             _ = RunJoplinHealthCheckAsync(manual: false);
             _ = RunGoogleCalendarHealthCheckAsync(manual: false);
             _ = RunBeeperHealthCheckAsync(manual: false);
+            _ = RunTelegramHealthCheckAsync(manual: false);
             _ = RunAiHealthCheckAsync(manual: false);
             _ = RunWhisperHealthCheckAsync(manual: false);
             _ = RefreshListsAsync(notifyOnError: false);
@@ -1003,6 +1040,7 @@ public sealed class TrayController : IDisposable
             _joplinHealth = SpHealth.Unknown;
             _googleHealth = SpHealth.Unknown;
             _beeperHealth = SpHealth.Unknown;
+            _telegramHealth = SpHealth.Unknown;
             _aiHealth = SpHealth.Unknown;
             _whisperHealth = SpHealth.Unknown;
             _captureTag = new CaptureTagResolver(_config.SuperProductivity, _log);
@@ -1246,6 +1284,63 @@ public sealed class TrayController : IDisposable
         finally
         {
             _beeperHealthCheckInFlight = false;
+        }
+    }
+
+    /// <summary>Only runs while Telegram is enabled with a bot token set.</summary>
+    private async Task RunTelegramHealthCheckAsync(bool manual)
+    {
+        if (!_config.Telegram.Enabled || string.IsNullOrWhiteSpace(_config.Telegram.BotToken))
+        {
+            if (manual) Notify("Telegram", "No bot token set — nothing to test.", NotifyKind.Error, force: true);
+            return;
+        }
+        if (!manual && _telegramHealthCheckInFlight) return;
+        _telegramHealthCheckInFlight = true;
+        try
+        {
+            SpHealth state;
+            string message;
+            try
+            {
+                using var telegram = new TelegramClient(_config.Telegram);
+                message = await telegram.TestAsync();
+                state = SpHealth.Ok;
+            }
+            catch (Exception ex)
+            {
+                message = ex.Message;
+                state = SpHealth.Unreachable;
+            }
+
+            var prev = _telegramHealth;
+            _telegramHealth = state;
+
+            if (state != prev)
+            {
+                if (state == SpHealth.Ok)
+                    _log.Info(prev == SpHealth.Unreachable
+                        ? $"Telegram connection restored — {message}"
+                        : $"Telegram reachable — {message}");
+                else
+                    _log.Warn($"Telegram unreachable — {message}");
+
+                if (!manual && state == SpHealth.Unreachable && prev != SpHealth.Unreachable)
+                {
+                    Notify("Telegram unreachable", message, NotifyKind.Warning);
+                    _ = CreateOutageTaskAsync("Telegram", message);
+                }
+
+                RefreshTray();
+            }
+
+            if (manual)
+                Notify(state == SpHealth.Ok ? "Telegram" : "Telegram — not reachable",
+                    message, state == SpHealth.Ok ? NotifyKind.Info : NotifyKind.Error, force: true);
+        }
+        finally
+        {
+            _telegramHealthCheckInFlight = false;
         }
     }
 
@@ -1530,6 +1625,13 @@ public sealed class TrayController : IDisposable
             await RunBeeperHealthCheckAsync(manual: false);
             lines.Add($"Beeper: {DescribeHealth(_beeperHealth)}");
             allOk &= _beeperHealth == SpHealth.Ok;
+        }
+
+        if (_config.Telegram.Enabled)
+        {
+            await RunTelegramHealthCheckAsync(manual: false);
+            lines.Add($"Telegram: {DescribeHealth(_telegramHealth)}");
+            allOk &= _telegramHealth == SpHealth.Ok;
         }
 
         if (_config.AiClassifier.Enabled)
@@ -1820,7 +1922,7 @@ public sealed class TrayController : IDisposable
     {
         var value = await InputDialog.ShowAsync("Ollama server URL",
             "Paste the base URL of your Ollama server, e.g. http://127.0.0.1:11434.\n" +
-            "Leave blank to keep the current one.");
+            "Leave blank to keep the current one.", masked: false);
         if (value is null || value.Trim().Length == 0) return;
 
         _config.AiClassifier.OllamaBaseUrl = value.Trim();
@@ -1893,7 +1995,7 @@ public sealed class TrayController : IDisposable
         var value = await InputDialog.ShowAsync("Google OAuth client ID",
             "Paste the client ID from a Google Cloud \"Desktop app\" OAuth client\n" +
             "(console.cloud.google.com → APIs & Services → Credentials).\n" +
-            "Leave blank to keep the current one.");
+            "Leave blank to keep the current one.", masked: false);
         if (value is null || value.Trim().Length == 0) return;
 
         _config.GoogleCalendar.ClientId = value.Trim();
@@ -1970,6 +2072,38 @@ public sealed class TrayController : IDisposable
         SaveConfig("Beeper API token updated");
     }
 
+    // ---- Telegram -------------------------------------------------------
+
+    private void ToggleTelegramEnabled()
+    {
+        var cfg = _config.Telegram;
+        cfg.Enabled = !cfg.Enabled;
+        SaveConfig($"Telegram bot {(cfg.Enabled ? "enabled" : "disabled")}");
+    }
+
+    private async Task SetTelegramBotTokenAsync()
+    {
+        var value = await InputDialog.ShowAsync("Telegram bot token",
+            "Paste a bot token from @BotFather, e.g. 123456789:AAF...\n" +
+            "Leave blank to keep the current one.");
+        if (value is null || value.Trim().Length == 0) return;
+
+        _config.Telegram.BotToken = value.Trim();
+        SaveConfig("Telegram bot token updated");
+    }
+
+    private async Task SetTelegramChatIdAsync()
+    {
+        var value = await InputDialog.ShowAsync("Telegram chat ID",
+            "The numeric chat ID (or \"@channelusername\") the bot sends to — message the bot " +
+            "once, then check its getUpdates response, or ask @userinfobot.\n" +
+            "Leave blank to keep the current one.", masked: false);
+        if (value is null || value.Trim().Length == 0) return;
+
+        _config.Telegram.ChatId = value.Trim();
+        SaveConfig("Telegram chat ID updated");
+    }
+
     // ---- Whisper ------------------------------------------------------
 
     private void ToggleWhisperEnabled()
@@ -1983,7 +2117,7 @@ public sealed class TrayController : IDisposable
     {
         var value = await InputDialog.ShowAsync("Whisper server URL",
             "Paste the base URL of your local Whisper server, e.g. http://127.0.0.1:8000.\n" +
-            "Leave blank to keep the current one.");
+            "Leave blank to keep the current one.", masked: false);
         if (value is null || value.Trim().Length == 0) return;
 
         _config.Whisper.BaseUrl = value.Trim();
@@ -1994,7 +2128,7 @@ public sealed class TrayController : IDisposable
     {
         var value = await InputDialog.ShowAsync("Whisper model",
             "Model name to request, if your server serves more than one.\n" +
-            "Leave blank to use whatever the server has loaded by default.");
+            "Leave blank to use whatever the server has loaded by default.", masked: false);
         if (value is null) return;
 
         _config.Whisper.Model = value.Trim();
@@ -2010,17 +2144,6 @@ public sealed class TrayController : IDisposable
         SaveConfig($"Web search {(cfg.Enabled ? "enabled" : "disabled")}");
     }
 
-    private async Task SetWebSearchRecipientAsync()
-    {
-        var value = await InputDialog.ShowAsync("Web search Beeper recipient",
-            "Name to match against your existing single-person Beeper chats — every web search " +
-            "result goes to this one chat. Leave blank to keep the current one.");
-        if (value is null || value.Trim().Length == 0) return;
-
-        _config.WebSearch.BeeperRecipient = value.Trim();
-        SaveConfig("Web search recipient updated");
-    }
-
     // ---- Webhook receipt --------------------------------------------
 
     private void ToggleWebhookReceiptEnabled()
@@ -2030,16 +2153,6 @@ public sealed class TrayController : IDisposable
         SaveConfig($"Webhook receipt {(cfg.Enabled ? "enabled" : "disabled")}");
     }
 
-    private async Task SetWebhookReceiptRecipientAsync()
-    {
-        var value = await InputDialog.ShowAsync("Webhook receipt Beeper recipient",
-            "Name to match against your existing single-person Beeper chats — every webhook " +
-            "sends a short receipt here. Leave blank to keep the current one.");
-        if (value is null || value.Trim().Length == 0) return;
-
-        _config.WebhookReceipt.BeeperRecipient = value.Trim();
-        SaveConfig("Webhook receipt recipient updated");
-    }
 
     private void SaveConfig(string what)
     {

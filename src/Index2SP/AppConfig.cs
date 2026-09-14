@@ -69,19 +69,14 @@ public sealed class AppConfig
     /// <summary>
     /// Optional: when the AI classifier decides a transcription is a web-search request
     /// ("search the web for...", "google...", "what is the latest version of..."), runs it
-    /// through Claude's built-in web search tool and sends the summary to one fixed Beeper chat.
+    /// through Claude's built-in web search tool and sends the summary via the Telegram bot.
     /// Always uses the Claude/Anthropic credential specifically for the search itself — this
     /// capability isn't available through the other providers — regardless of which one is
-    /// selected for classification. Requires aiClassifier.apiKey and beeper.enabled.
+    /// selected for classification. Requires aiClassifier.apiKey and telegram.enabled.
     /// </summary>
     public sealed class WebSearchConfig
     {
         public bool Enabled { get; set; } = false;
-
-        /// <summary>Name to match against your existing single-person Beeper chats — the same
-        /// matching Beeper messages use. Every web-search result goes to this one chat; nothing
-        /// is sent, and the request just falls back to a normal SP task, if this is blank.</summary>
-        public string BeeperRecipient { get; set; } = "";
 
         /// <summary>How many searches Claude may run to answer one query. Clamped 1–10.</summary>
         public int MaxUses { get; set; } = 3;
@@ -90,18 +85,37 @@ public sealed class AppConfig
     public WebhookReceiptConfig WebhookReceipt { get; set; } = new();
 
     /// <summary>
-    /// Optional: send a short Beeper message for every webhook Index2SP receives, naming what
+    /// Optional: send a short Telegram message for every webhook Index2SP receives, naming what
     /// the AI decided it was ("Webhook Received, Note Created") — a quick receipt independent of
     /// whether the underlying Super Productivity task or destination actually succeeds. Requires
-    /// beeper.enabled.
+    /// telegram.enabled.
     /// </summary>
     public sealed class WebhookReceiptConfig
     {
         public bool Enabled { get; set; } = false;
+    }
 
-        /// <summary>Name to match against your existing single-person Beeper chats — the same
-        /// matching Beeper messages use. Nothing is sent if this is blank.</summary>
-        public string BeeperRecipient { get; set; } = "";
+    public TelegramConfig Telegram { get; set; } = new();
+
+    /// <summary>
+    /// Optional: a Telegram bot used to deliver web-search summaries and webhook receipts — both
+    /// always go to the one chat you've already talked to the bot from, so unlike Beeper there's
+    /// no per-capture recipient matching to configure. Create a bot via @BotFather to get a
+    /// token, then message the bot once and use its getUpdates response (or @userinfobot /
+    /// @RawDataBot) to find the chat id.
+    /// </summary>
+    public sealed class TelegramConfig
+    {
+        public bool Enabled { get; set; } = false;
+
+        /// <summary>Bot token from @BotFather, e.g. "123456789:AAF...".</summary>
+        public string BotToken { get; set; } = "";
+
+        /// <summary>Numeric chat id (or "@channelusername" for a channel) the bot sends to.</summary>
+        public string ChatId { get; set; } = "";
+
+        /// <summary>Seconds to wait for Telegram before giving up. Clamped 2–30.</summary>
+        public int TimeoutSeconds { get; set; } = 8;
     }
 
     /// <summary>
@@ -412,6 +426,8 @@ public sealed class AppConfig
         WebSearch ??= new WebSearchConfig();
         WebSearch.MaxUses = Math.Clamp(WebSearch.MaxUses, 1, 10);
         WebhookReceipt ??= new WebhookReceiptConfig();
+        Telegram ??= new TelegramConfig();
+        Telegram.TimeoutSeconds = Math.Clamp(Telegram.TimeoutSeconds, 2, 30);
         SuperProductivity ??= new SuperProductivityConfig();
         if (string.IsNullOrWhiteSpace(SuperProductivity.BaseUrl))
             SuperProductivity.BaseUrl = "http://127.0.0.1:3876";

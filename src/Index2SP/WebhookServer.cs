@@ -349,8 +349,8 @@ public sealed class WebhookServer : IAsyncDisposable
                 }
             }
 
-            var includeWebSearch = _config.WebSearch.Enabled && _config.Beeper.Enabled &&
-                !string.IsNullOrWhiteSpace(_config.WebSearch.BeeperRecipient) &&
+            var includeWebSearch = _config.WebSearch.Enabled && _config.Telegram.Enabled &&
+                !string.IsNullOrWhiteSpace(_config.Telegram.BotToken) && !string.IsNullOrWhiteSpace(_config.Telegram.ChatId) &&
                 !string.IsNullOrWhiteSpace(_config.AiClassifier.ApiKey);
 
             var referenceTime = (recordedAt ?? DateTimeOffset.UtcNow).ToLocalTime();
@@ -486,19 +486,17 @@ public sealed class WebhookServer : IAsyncDisposable
     /// </summary>
     private async Task SendWebhookReceiptAsync(string captureKind)
     {
-        var cfg = _config.WebhookReceipt;
-        if (!cfg.Enabled || !_config.Beeper.Enabled || string.IsNullOrWhiteSpace(cfg.BeeperRecipient)) return;
+        if (!_config.WebhookReceipt.Enabled) return;
 
-        await SendBeeperMessageAsync(cfg.BeeperRecipient, $"Webhook Received, {captureKind}", platform: null);
+        await SendTelegramMessageAsync($"Webhook Received, {captureKind}");
     }
 
     /// <summary>
     /// Best-effort web search for transcriptions the classifier marked as "search the web for
-    /// X" — runs the search via Claude, then sends the summary to the one configured Beeper
-    /// recipient. Normally additive — the Super Productivity task is created either way — but
-    /// with aiClassifier.exclusiveRouting on, a true result here tells the caller to skip that
-    /// task instead. Reuses <see cref="SendBeeperMessageAsync"/> for delivery, so an ambiguous or
-    /// missing recipient match behaves exactly like a regular message.
+    /// X" — runs the search via Claude, then sends the summary through the Telegram bot. Normally
+    /// additive — the Super Productivity task is created either way — but with
+    /// aiClassifier.exclusiveRouting on, a true result here tells the caller to skip that task
+    /// instead.
     /// </summary>
     private async Task<bool> RunWebSearchAndSendAsync(string query)
     {
@@ -509,8 +507,32 @@ public sealed class WebhookServer : IAsyncDisposable
             return false;
         }
 
-        var text = $"🔍 {query}\n\n{summary}";
-        return await SendBeeperMessageAsync(_config.WebSearch.BeeperRecipient, text, platform: null);
+        return await SendTelegramMessageAsync($"🔍 {query}\n\n{summary}");
+    }
+
+    /// <summary>
+    /// Best-effort Telegram delivery — used only for web-search summaries and webhook receipts,
+    /// both of which always go to the one chat the bot is configured for. The general "send a
+    /// message to X" feature stays on Beeper (see <see cref="SendBeeperMessageAsync"/>), which is
+    /// where recipient search across whatever chats already exist actually matters.
+    /// </summary>
+    private async Task<bool> SendTelegramMessageAsync(string text)
+    {
+        var cfg = _config.Telegram;
+        if (!cfg.Enabled || string.IsNullOrWhiteSpace(cfg.BotToken) || string.IsNullOrWhiteSpace(cfg.ChatId)) return false;
+
+        try
+        {
+            using var telegram = new TelegramClient(cfg);
+            await telegram.SendMessageAsync(cfg.ChatId, text, CancellationToken.None);
+            _log.Info($"Sent Telegram message: \"{text}\"");
+            return true;
+        }
+        catch (Exception ex) when (ex is TelegramApiException or HttpRequestException or TaskCanceledException)
+        {
+            _log.Warn($"Could not send Telegram message: {ex.Message}");
+            return false;
+        }
     }
 
     /// <summary>

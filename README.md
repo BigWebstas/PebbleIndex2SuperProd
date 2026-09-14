@@ -22,7 +22,7 @@ Pebble Index 01 ──HTTPS──▶ your tunnel ──▶ Index2SP :8787/pebble
   me to", "send a message to X saying", etc. down to just the content), picks project/tags,
   splits multi-item shopping lists, sets due dates, and — per destination toggle — files notes
   to Joplin, adds calendar events, sends a Beeper message, or runs a real web search (via
-  Claude) and sends the summary to one configured Beeper chat. **Beeper sends immediately, with
+  Claude) and sends the summary through a Telegram bot. **Beeper sends immediately, with
   no confirmation step.**
 - Uncaught errors are logged and reported as an SP task instead of crashing silently.
   Integration outages get their own SP task too.
@@ -50,9 +50,9 @@ Grab a [release](https://github.com/BigWebstas/PebbleIndex2SuperProd/releases/la
 
 Tray → **Edit config…** opens `config.json` (`%APPDATA%\Index2SP\` on Windows,
 `~/.config/Index2SP/` on Linux); **Reload config** applies changes. Every destination —
-Super Productivity, AI classifier, Joplin, Google Calendar, Beeper, Whisper — has its own tray
-submenu: enable, credentials, and **Test connection** (or **Test all connections** for one
-combined check). Full field reference: [`config.example.json`](config.example.json).
+Super Productivity, AI classifier, Joplin, Google Calendar, Beeper, Telegram, Whisper — has its
+own tray submenu: enable, credentials, and **Test connection** (or **Test all connections** for
+one combined check). Full field reference: [`config.example.json`](config.example.json).
 
 **AI classifier → Provider** picks the backend: Claude, Gemini, OpenAI, or a local Ollama server.
 Each has its own credential/model submenu; only the selected provider's needs to be filled in.
@@ -79,6 +79,9 @@ Two setups need an extra step first:
 - **Beeper** — create a personal access token in Beeper Desktop's API settings, paste it in.
   Naming a platform ("text Abbie on Telegram") picks that chat when the recipient has several;
   with no platform named, it only sends when the recipient matches exactly one chat.
+- **Telegram** — message [@BotFather](https://t.me/BotFather) to create a bot and get a token,
+  paste it into the tray, then message your new bot once and check its `getUpdates` response
+  (or ask [@userinfobot](https://t.me/userinfobot)) for the chat ID to send to.
 
 **Whisper** needs a local, OpenAI-compatible speech-to-text server already running — whisper.cpp's
 own `server` example, faster-whisper-server, or LocalAI all work, since they share the same
@@ -86,15 +89,19 @@ own `server` example, faster-whisper-server, or LocalAI all work, since they sha
 always used when present, and this only fires for a genuinely audio-only webhook.
 
 **Web search** ("search the web for...", "google...", "what is the latest version of X") runs
-through Claude's built-in web search tool and sends the summary to one fixed Beeper chat you set
-in **Web search → Set Beeper recipient…**. Needs a Claude API key (regardless of which provider
-you picked for classification — none of the others expose this) and Beeper enabled.
+through Claude's built-in web search tool and sends the summary through the **Telegram** bot.
+Needs a Claude API key (regardless of which provider you picked for classification — none of the
+others expose this) and Telegram enabled.
 
-**Webhook receipt** sends a short Beeper message for every capture — "Webhook Received, Note
-Created", "Webhook Received, Task Created", etc. — to one chat you set in **Webhook receipt →
-Set Beeper recipient…**. It's a receipt, not a delivery confirmation: it fires as soon as
-Index2SP knows what the AI decided, whether or not the underlying task or destination actually
-succeeds. Needs Beeper enabled.
+**Webhook receipt** sends a short Telegram message for every capture — "Webhook Received, Note
+Created", "Webhook Received, Task Created", etc. It's a receipt, not a delivery confirmation: it
+fires as soon as Index2SP knows what the AI decided, whether or not the underlying task or
+destination actually succeeds. Needs Telegram enabled.
+
+**Telegram** always sends to the one chat ID you configure — unlike Beeper, there's no per-capture
+recipient matching, since a bot only knows chats it's already been messaged from. It's used only
+for web search and webhook receipt; the general "send a message to X" feature stays on Beeper,
+which is where matching a spoken name against your existing chats actually matters.
 
 **Check for updates automatically** (on by default, bottom of the tray menu) pings GitHub once a
 day; **Check for updates** runs it on demand. A found update can be downloaded straight from the
