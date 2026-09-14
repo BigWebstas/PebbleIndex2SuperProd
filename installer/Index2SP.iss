@@ -38,6 +38,7 @@ DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 UninstallDisplayIcon={app}\{#AppExeName}
 UninstallDisplayName={#AppName}{#VariantLabel}
+SetupIconFile=..\packaging\windows\index2sp.ico
 OutputDir=..\dist
 OutputBaseFilename=Index2SP-Setup{#VariantSuffix}-{#AppVersion}
 Compression=lzma2

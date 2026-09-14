@@ -8,6 +8,7 @@
     <RootNamespace>Index2SP</RootNamespace>
     <AssemblyName>Index2SP</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>../../packaging/windows/index2sp.ico</ApplicationIcon>
     <InvariantGlobalization>true</InvariantGlobalization>
     <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
