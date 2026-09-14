@@ -46,11 +46,15 @@ public sealed class TrayController : IDisposable
     private SpHealth _beeperHealth = SpHealth.Unknown;
     private bool _beeperHealthCheckInFlight;
 
+    private SpHealth _aiHealth = SpHealth.Unknown;
+    private bool _aiHealthCheckInFlight;
+
     private IReadOnlyList<SpNamedItem> _projects = Array.Empty<SpNamedItem>();
     private IReadOnlyList<SpNamedItem> _tags = Array.Empty<SpNamedItem>();
     private IReadOnlyList<SpNamedItem> _notebooks = Array.Empty<SpNamedItem>();
     private IReadOnlyList<SpNamedItem> _joplinTags = Array.Empty<SpNamedItem>();
     private IReadOnlyList<SpNamedItem> _calendars = Array.Empty<SpNamedItem>();
+    private IReadOnlyList<SpNamedItem> _ollamaModels = Array.Empty<SpNamedItem>();
 
     private static readonly (string Id, string Label)[] AiModels =
     [
@@ -107,6 +111,7 @@ public sealed class TrayController : IDisposable
             await RunJoplinHealthCheckAsync(manual: false);
             await RunGoogleCalendarHealthCheckAsync(manual: false);
             await RunBeeperHealthCheckAsync(manual: false);
+            await RunAiHealthCheckAsync(manual: false);
         };
         ConfigureHealthTimer();
 
@@ -241,6 +246,17 @@ public sealed class TrayController : IDisposable
             line += $"  ·  {beeper}";
         }
 
+        if (_config.AiClassifier.Enabled)
+        {
+            var ai = _aiHealth switch
+            {
+                SpHealth.Ok => "AI reachable",
+                SpHealth.Unreachable => "AI unreachable",
+                _ => "AI not checked yet",
+            };
+            line += $"  ·  {ai}";
+        }
+
         return line;
     }
 
@@ -363,6 +379,7 @@ public sealed class TrayController : IDisposable
             : "Off: every task/note just gets its default tags"));
 
         m.Add(new NativeMenuItemSeparator());
+        m.Add(Action("Test connection", () => _ = RunAiHealthCheckAsync(manual: true)));
         m.Add(Disabled($"Using {DescribeProvider(cfg.Provider)} — {(HasCredentialFor(cfg.Provider) ? "credential is set" : "no credential set")}"));
         return m;
     }
@@ -438,11 +455,36 @@ public sealed class TrayController : IDisposable
         var cfg = _config.AiClassifier;
 
         m.Add(Action("Set server URL…", () => _ = SetOllamaBaseUrlAsync()));
-        m.Add(Action(string.IsNullOrWhiteSpace(cfg.OllamaModel) ? "Set model name…" : "Change model name…",
-            () => _ = SetOllamaModelAsync()));
+        m.Add(new NativeMenuItem("Model") { Menu = BuildOllamaModelSubmenu() });
         m.Add(Disabled($"Server: {cfg.OllamaBaseUrl}"));
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.OllamaModel) ? "No model set" : $"Model: {cfg.OllamaModel}"));
         m.Add(Disabled("Local model must support tool calling — can't be forced, falls back if ignored"));
+        return m;
+    }
+
+    private NativeMenu BuildOllamaModelSubmenu()
+    {
+        var m = new NativeMenu();
+        var current = _config.AiClassifier.OllamaModel ?? "";
+
+        if (_ollamaModels.Count == 0)
+        {
+            m.Add(new NativeMenuItem("(run “Refresh projects, tags & notebooks” with the server reachable)") { IsEnabled = false });
+            return m;
+        }
+
+        foreach (var model in _ollamaModels.OrderBy(x => x.Title, StringComparer.OrdinalIgnoreCase))
+        {
+            var id = model.Id;
+            var title = model.Title;
+            var item = new NativeMenuItem(title)
+            {
+                ToggleType = NativeMenuItemToggleType.CheckBox,
+                IsChecked = id == current,
+            };
+            item.Click += (_, _) => SetOllamaModel(id, title);
+            m.Add(item);
+        }
         return m;
     }
 
@@ -719,6 +761,7 @@ public sealed class TrayController : IDisposable
             _ = RunJoplinHealthCheckAsync(manual: false);
             _ = RunGoogleCalendarHealthCheckAsync(manual: false);
             _ = RunBeeperHealthCheckAsync(manual: false);
+            _ = RunAiHealthCheckAsync(manual: false);
             _ = RefreshListsAsync(notifyOnError: false);
         }
         catch (Exception ex)
@@ -777,6 +820,7 @@ public sealed class TrayController : IDisposable
             _joplinHealth = SpHealth.Unknown;
             _googleHealth = SpHealth.Unknown;
             _beeperHealth = SpHealth.Unknown;
+            _aiHealth = SpHealth.Unknown;
             _captureTag = new CaptureTagResolver(_config.SuperProductivity, _log);
             _classifier = new AiTaskClassifier(_config.AiClassifier, _log);
             ConfigureHealthTimer();
@@ -1020,9 +1064,66 @@ public sealed class TrayController : IDisposable
         }
     }
 
-    /// <summary>Probes every configured destination (SP always; Joplin/Google Calendar/Beeper
-    /// only when a credential is set) and shows one combined result instead of four separate
-    /// pop-ups.</summary>
+    /// <summary>Only runs while the AI classifier is enabled and its selected provider has a
+    /// credential set.</summary>
+    private async Task RunAiHealthCheckAsync(bool manual)
+    {
+        if (!_config.AiClassifier.Enabled)
+        {
+            if (manual) Notify("AI classifier", "Disabled — nothing to test.", NotifyKind.Error, force: true);
+            return;
+        }
+        if (!manual && _aiHealthCheckInFlight) return;
+        _aiHealthCheckInFlight = true;
+        try
+        {
+            SpHealth state;
+            string message;
+            try
+            {
+                message = await _classifier.TestAsync();
+                state = SpHealth.Ok;
+            }
+            catch (Exception ex)
+            {
+                message = ex.Message;
+                state = SpHealth.Unreachable;
+            }
+
+            var prev = _aiHealth;
+            _aiHealth = state;
+
+            if (state != prev)
+            {
+                if (state == SpHealth.Ok)
+                    _log.Info(prev == SpHealth.Unreachable
+                        ? $"AI classifier connection restored — {message}"
+                        : $"AI classifier reachable — {message}");
+                else
+                    _log.Warn($"AI classifier unreachable — {message}");
+
+                if (!manual && state == SpHealth.Unreachable && prev != SpHealth.Unreachable)
+                {
+                    Notify("AI classifier unreachable", message, NotifyKind.Warning);
+                    _ = CreateOutageTaskAsync("AI classifier", message);
+                }
+
+                RefreshTray();
+            }
+
+            if (manual)
+                Notify(state == SpHealth.Ok ? "AI classifier" : "AI classifier — not reachable",
+                    message, state == SpHealth.Ok ? NotifyKind.Info : NotifyKind.Error, force: true);
+        }
+        finally
+        {
+            _aiHealthCheckInFlight = false;
+        }
+    }
+
+    /// <summary>Probes every configured destination (SP always; Joplin/Google Calendar/Beeper/AI
+    /// classifier only when a credential is set) and shows one combined result instead of
+    /// several separate pop-ups.</summary>
     private async Task RunAllConnectionsTestAsync()
     {
         await RunHealthCheckAsync(manual: false, forceRun: true);
@@ -1048,6 +1149,13 @@ public sealed class TrayController : IDisposable
             await RunBeeperHealthCheckAsync(manual: false);
             lines.Add($"Beeper: {DescribeHealth(_beeperHealth)}");
             allOk &= _beeperHealth == SpHealth.Ok;
+        }
+
+        if (_config.AiClassifier.Enabled)
+        {
+            await RunAiHealthCheckAsync(manual: false);
+            lines.Add($"AI classifier ({DescribeProvider(_config.AiClassifier.Provider)}): {DescribeHealth(_aiHealth)}");
+            allOk &= _aiHealth == SpHealth.Ok;
         }
 
         Notify(allOk ? "All connections OK" : "Some connections failed",
@@ -1156,6 +1264,22 @@ public sealed class TrayController : IDisposable
             {
                 _log.Warn($"Couldn't load Google calendars: {ex.Message}");
                 if (notifyOnError) Notify("Couldn't load Google calendars", ex.Message, NotifyKind.Error);
+            }
+        }
+
+        // Only bother if Ollama looks like it's actually in use — otherwise every refresh (and
+        // every app start) would try to reach localhost:11434 for users who never touch it.
+        if (_config.AiClassifier.Provider == "ollama" || !string.IsNullOrWhiteSpace(_config.AiClassifier.OllamaModel))
+        {
+            try
+            {
+                using var ollama = new OllamaClient(_config.AiClassifier.OllamaBaseUrl, _config.AiClassifier.TimeoutSeconds);
+                _ollamaModels = await ollama.GetModelsAsync();
+            }
+            catch (Exception ex) when (ex is OllamaApiException or HttpRequestException or TaskCanceledException)
+            {
+                _log.Warn($"Couldn't load Ollama models: {ex.Message}");
+                if (notifyOnError) Notify("Couldn't load Ollama models", ex.Message, NotifyKind.Error);
             }
         }
 
@@ -1280,15 +1404,10 @@ public sealed class TrayController : IDisposable
         SaveConfig("Ollama server URL updated");
     }
 
-    private async Task SetOllamaModelAsync()
+    private void SetOllamaModel(string id, string label)
     {
-        var value = await InputDialog.ShowAsync("Ollama model",
-            "Paste a model name as shown by `ollama list`, e.g. llama3.1.\n" +
-            "It must support tool calling. Leave blank to keep the current one.");
-        if (value is null || value.Trim().Length == 0) return;
-
-        _config.AiClassifier.OllamaModel = value.Trim();
-        SaveConfig("Ollama model updated");
+        _config.AiClassifier.OllamaModel = id;
+        SaveConfig($"Ollama model = {label}");
     }
 
     private void ToggleRequireTags()

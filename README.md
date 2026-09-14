@@ -47,9 +47,11 @@ check). Full field reference: [`config.example.json`](config.example.json).
 
 **AI classifier → Provider** picks the backend: Claude, Gemini, OpenAI, or a local Ollama server.
 Each has its own credential/model submenu; only the selected provider's needs to be filled in.
-Ollama needs no key (just a server URL and a locally-pulled tool-calling model) but, unlike the
-three hosted providers, can't be forced to call the tool — an unsuited model may just not
-classify, falling back to the static config like any other failure.
+Ollama needs no key — just a server URL and a model, picked from whatever's actually pulled on
+that host (**Refresh projects, tags & notebooks** fetches the list) — but, unlike the three
+hosted providers, can't be forced to call the tool: an unsuited model may just not classify,
+falling back to the static config like any other failure. The background health check and
+**Test all connections** cover whichever provider is currently selected too.
 
 Two setups need an extra step first:
 

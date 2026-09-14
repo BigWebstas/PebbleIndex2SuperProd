@@ -95,6 +95,76 @@ public sealed class AiTaskClassifier
         _ => !string.IsNullOrWhiteSpace(_config.ApiKey),
     };
 
+    /// <summary>Probes whichever provider is currently selected — used by the tray's health
+    /// check and "Test all connections". Throws with a human-readable message on any failure
+    /// (not configured, network, auth, model not found/pulled); never returns a failure as a
+    /// plain value, matching the other integration clients' TestAsync methods.</summary>
+    public async Task<string> TestAsync(CancellationToken ct = default)
+    {
+        if (!_config.Enabled)
+            throw new InvalidOperationException("AI classifier is disabled.");
+
+        var provider = _config.Provider;
+        if (!HasCredential(provider))
+            throw new InvalidOperationException($"No credential set for {provider}.");
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(_config.TimeoutSeconds));
+
+        return provider switch
+        {
+            "gemini" => await TestGeminiAsync(cts.Token),
+            "openai" => await TestOpenAiAsync(cts.Token),
+            "ollama" => await TestOllamaAsync(cts.Token),
+            _ => await TestClaudeAsync(cts.Token),
+        };
+    }
+
+    private async Task<string> TestClaudeAsync(CancellationToken ct)
+    {
+        using var client = new AnthropicClient { ApiKey = _config.ApiKey };
+        var model = await client.Models.Retrieve(_config.Model, cancellationToken: ct);
+        return $"OK — Claude reachable, model \"{model.ID}\" available";
+    }
+
+    private async Task<string> TestGeminiAsync(CancellationToken ct)
+    {
+        var model = string.IsNullOrWhiteSpace(_config.GeminiModel) ? "gemini-2.5-flash" : _config.GeminiModel.Trim();
+        using var http = new HttpClient();
+        using var req = new HttpRequestMessage(HttpMethod.Get,
+            $"https://generativelanguage.googleapis.com/v1beta/models/{Uri.EscapeDataString(model)}");
+        req.Headers.Add("x-goog-api-key", _config.GeminiApiKey);
+        using var resp = await http.SendAsync(req, ct);
+        if (!resp.IsSuccessStatusCode)
+            throw new Exception($"Gemini returned HTTP {(int)resp.StatusCode} for model \"{model}\".");
+
+        return $"OK — Gemini reachable, model \"{model}\" available";
+    }
+
+    private async Task<string> TestOpenAiAsync(CancellationToken ct)
+    {
+        var model = string.IsNullOrWhiteSpace(_config.OpenAiModel) ? "gpt-4o-mini" : _config.OpenAiModel.Trim();
+        using var http = new HttpClient();
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"https://api.openai.com/v1/models/{Uri.EscapeDataString(model)}");
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _config.OpenAiApiKey);
+        using var resp = await http.SendAsync(req, ct);
+        if (!resp.IsSuccessStatusCode)
+            throw new Exception($"OpenAI returned HTTP {(int)resp.StatusCode} for model \"{model}\".");
+
+        return $"OK — OpenAI reachable, model \"{model}\" available";
+    }
+
+    private async Task<string> TestOllamaAsync(CancellationToken ct)
+    {
+        using var ollama = new OllamaClient(_config.OllamaBaseUrl, _config.TimeoutSeconds);
+        var models = await ollama.GetModelsAsync(ct);
+        if (!models.Any(m => m.Id == _config.OllamaModel))
+            throw new Exception($"Reached Ollama but model \"{_config.OllamaModel}\" isn't in the pulled list " +
+                                 $"({models.Count} model(s) pulled).");
+
+        return $"OK — Ollama reachable, model \"{_config.OllamaModel}\" is pulled";
+    }
+
     // ---- Claude (Anthropic Messages API, official SDK) ----------------
 
     private async Task<IReadOnlyDictionary<string, JsonElement>?> ClassifyWithClaudeAsync(
