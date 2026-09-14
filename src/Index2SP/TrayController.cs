@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using Anthropic.Exceptions;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
@@ -62,6 +63,8 @@ public sealed class TrayController : IDisposable
     private IReadOnlyList<SpNamedItem> _joplinTags = Array.Empty<SpNamedItem>();
     private IReadOnlyList<SpNamedItem> _calendars = Array.Empty<SpNamedItem>();
     private IReadOnlyList<SpNamedItem> _ollamaModels = Array.Empty<SpNamedItem>();
+    private IReadOnlyList<SpNamedItem> _claudeModels = Array.Empty<SpNamedItem>();
+    private IReadOnlyList<SpNamedItem> _geminiModels = Array.Empty<SpNamedItem>();
 
     private static readonly (string Id, string Label)[] AiModels =
     [
@@ -511,6 +514,9 @@ public sealed class TrayController : IDisposable
             () => _ = SetApiKeyAsync()));
         m.Add(new NativeMenuItem("Model") { Menu = BuildAiModelSubmenu() });
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.ApiKey) ? "No API key set" : "API key is set"));
+        m.Add(Disabled(_claudeModels.Count > 0
+            ? $"{_claudeModels.Count} models loaded from your account"
+            : "Showing built-in defaults — Refresh projects, tags & notebooks to pull your account's real list"));
         return m;
     }
 
@@ -523,6 +529,9 @@ public sealed class TrayController : IDisposable
             () => _ = SetGeminiApiKeyAsync()));
         m.Add(new NativeMenuItem("Model") { Menu = BuildGeminiModelSubmenu() });
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.GeminiApiKey) ? "No API key set" : "API key is set"));
+        m.Add(Disabled(_geminiModels.Count > 0
+            ? $"{_geminiModels.Count} models loaded from your account"
+            : "Showing built-in defaults — Refresh projects, tags & notebooks to pull your account's real list"));
         return m;
     }
 
@@ -581,15 +590,20 @@ public sealed class TrayController : IDisposable
     {
         var m = new NativeMenu();
         var current = _config.AiClassifier.GeminiModel;
+        var models = _geminiModels.Count > 0
+            ? _geminiModels
+            : GeminiModels.Select(x => new SpNamedItem(x.Id, x.Label)).ToList();
 
-        foreach (var (id, label) in GeminiModels)
+        foreach (var model in models)
         {
-            var item = new NativeMenuItem(label)
+            var id = model.Id;
+            var title = model.Title;
+            var item = new NativeMenuItem(title)
             {
                 ToggleType = NativeMenuItemToggleType.CheckBox,
                 IsChecked = id == current,
             };
-            item.Click += (_, _) => SetGeminiModel(id, label);
+            item.Click += (_, _) => SetGeminiModel(id, title);
             m.Add(item);
         }
         return m;
@@ -652,15 +666,20 @@ public sealed class TrayController : IDisposable
     {
         var m = new NativeMenu();
         var current = _config.AiClassifier.Model;
+        var models = _claudeModels.Count > 0
+            ? _claudeModels
+            : AiModels.Select(x => new SpNamedItem(x.Id, x.Label)).ToList();
 
-        foreach (var (id, label) in AiModels)
+        foreach (var model in models)
         {
-            var item = new NativeMenuItem(label)
+            var id = model.Id;
+            var title = model.Title;
+            var item = new NativeMenuItem(title)
             {
                 ToggleType = NativeMenuItemToggleType.CheckBox,
                 IsChecked = id == current,
             };
-            item.Click += (_, _) => SetAiModel(id, label);
+            item.Click += (_, _) => SetAiModel(id, title);
             m.Add(item);
         }
         return m;
@@ -1507,6 +1526,34 @@ public sealed class TrayController : IDisposable
             {
                 _log.Warn($"Couldn't load Ollama models: {ex.Message}");
                 if (notifyOnError) Notify("Couldn't load Ollama models", ex.Message, NotifyKind.Error);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(_config.AiClassifier.ApiKey))
+        {
+            try
+            {
+                _claudeModels = await _classifier.ListClaudeModelsAsync();
+            }
+            catch (Exception ex) when (ex is AnthropicException or HttpRequestException or TaskCanceledException)
+            {
+                _log.Warn($"Couldn't load Claude models: {ex.Message}");
+                if (notifyOnError) Notify("Couldn't load Claude models", ex.Message, NotifyKind.Error);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(_config.AiClassifier.GeminiApiKey))
+        {
+            try
+            {
+                _geminiModels = await _classifier.ListGeminiModelsAsync();
+            }
+            catch (Exception ex)
+            {
+                // Gemini's client throws a bare Exception on a non-2xx response (no dedicated
+                // exception type exists for it in this codebase, same as its other call sites).
+                _log.Warn($"Couldn't load Gemini models: {ex.Message}");
+                if (notifyOnError) Notify("Couldn't load Gemini models", ex.Message, NotifyKind.Error);
             }
         }
 

@@ -189,6 +189,65 @@ public sealed class AiTaskClassifier
         return $"OK — Ollama reachable, model \"{_config.OllamaModel}\" is pulled";
     }
 
+    /// <summary>Real Claude models available to this API key, newest first — used to build the
+    /// tray's model picker instead of the hardcoded fallback list.</summary>
+    public async Task<IReadOnlyList<SpNamedItem>> ListClaudeModelsAsync(CancellationToken ct = default)
+    {
+        using var client = new AnthropicClient { ApiKey = _config.ApiKey };
+        var page = await client.Models.List(new Anthropic.Models.Models.ModelListParams { Limit = 100 }, cancellationToken: ct);
+        return page.Items
+            .OrderByDescending(m => m.CreatedAt)
+            .Select(m => new SpNamedItem(m.ID, m.DisplayName))
+            .ToList();
+    }
+
+    /// <summary>Real Gemini models available to this API key that support generateContent (the
+    /// call classification uses) — used to build the tray's model picker instead of the
+    /// hardcoded fallback list. Gemini's list endpoint doesn't expose a creation date, so this
+    /// keeps the API's own ordering.</summary>
+    public async Task<IReadOnlyList<SpNamedItem>> ListGeminiModelsAsync(CancellationToken ct = default)
+    {
+        var list = new List<SpNamedItem>();
+        string? pageToken = null;
+        var pages = 0;
+        do
+        {
+            var url = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=100" +
+                      (pageToken is null ? "" : $"&pageToken={Uri.EscapeDataString(pageToken)}");
+            using var http = new HttpClient();
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.Add("x-goog-api-key", _config.GeminiApiKey);
+            using var resp = await http.SendAsync(req, ct);
+            var text = await resp.Content.ReadAsStringAsync(ct);
+            if (!resp.IsSuccessStatusCode)
+                throw new Exception($"Gemini returned HTTP {(int)resp.StatusCode} listing models: {Truncate(text)}");
+
+            var root = JsonSerializer.Deserialize<JsonElement>(text);
+            if (root.TryGetProperty("models", out var models) && models.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var m in models.EnumerateArray())
+                {
+                    var supportsGenerate = m.TryGetProperty("supportedGenerationMethods", out var methods) &&
+                        methods.ValueKind == JsonValueKind.Array &&
+                        methods.EnumerateArray().Any(x => x.GetString() == "generateContent");
+                    if (!supportsGenerate) continue;
+
+                    var name = m.TryGetProperty("name", out var nEl) ? nEl.GetString() : null;
+                    if (name is not { Length: > 0 }) continue;
+                    var id = name.StartsWith("models/") ? name["models/".Length..] : name;
+
+                    var displayName = m.TryGetProperty("displayName", out var dEl) ? dEl.GetString() : null;
+                    list.Add(new SpNamedItem(id, string.IsNullOrWhiteSpace(displayName) ? id : displayName));
+                }
+            }
+
+            pageToken = root.TryGetProperty("nextPageToken", out var npt) ? npt.GetString() : null;
+            pages++;
+        } while (!string.IsNullOrWhiteSpace(pageToken) && pages < 5);
+
+        return list;
+    }
+
     // ---- Claude (Anthropic Messages API, official SDK) ----------------
 
     private async Task<IReadOnlyDictionary<string, JsonElement>?> ClassifyWithClaudeAsync(
