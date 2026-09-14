@@ -58,6 +58,33 @@ public sealed class AppConfig
 
     public BeeperConfig Beeper { get; set; } = new();
 
+    public WhisperConfig Whisper { get; set; } = new();
+
+    /// <summary>
+    /// Optional: when Pebble sends a webhook with an audio file but no transcription text (the
+    /// case that's normally rejected with a 422), transcribe the audio locally instead of
+    /// dropping it. Points at a local, OpenAI-compatible Whisper server — whisper.cpp's own
+    /// `server` example, faster-whisper-server, LocalAI, etc. all implement the same
+    /// POST /v1/audio/transcriptions contract. Never overrides a transcription Pebble already
+    /// sent; only fills in for a genuinely audio-only webhook.
+    /// </summary>
+    public sealed class WhisperConfig
+    {
+        public bool Enabled { get; set; } = false;
+
+        /// <summary>Base URL of the local Whisper server.</summary>
+        public string BaseUrl { get; set; } = "http://127.0.0.1:8000";
+
+        /// <summary>Model name to request, if your server serves more than one. Blank uses
+        /// whatever the server has loaded by default.</summary>
+        public string Model { get; set; } = "";
+
+        /// <summary>Seconds to wait for a transcription before giving up and falling back to the
+        /// normal audio-only rejection. Transcription is slower than a classify call, so this has
+        /// a higher ceiling than the other integrations. Clamped 5–120.</summary>
+        public int TimeoutSeconds { get; set; } = 30;
+    }
+
     /// <summary>
     /// Optional: when the AI classifier decides a transcription is a request to message someone
     /// ("send a message to Abbie say hello"), send it through Beeper Desktop's local API — which
@@ -320,6 +347,10 @@ public sealed class AppConfig
         Beeper.TimeoutSeconds = Math.Clamp(Beeper.TimeoutSeconds, 2, 30);
         if (string.IsNullOrWhiteSpace(Beeper.BaseUrl)) Beeper.BaseUrl = "http://127.0.0.1:23373";
         Beeper.BaseUrl = Beeper.BaseUrl.TrimEnd('/');
+        Whisper ??= new WhisperConfig();
+        Whisper.TimeoutSeconds = Math.Clamp(Whisper.TimeoutSeconds, 5, 120);
+        if (string.IsNullOrWhiteSpace(Whisper.BaseUrl)) Whisper.BaseUrl = "http://127.0.0.1:8000";
+        Whisper.BaseUrl = Whisper.BaseUrl.TrimEnd('/');
         SuperProductivity ??= new SuperProductivityConfig();
         if (string.IsNullOrWhiteSpace(SuperProductivity.BaseUrl))
             SuperProductivity.BaseUrl = "http://127.0.0.1:3876";

@@ -54,5 +54,11 @@
     "baseUrl": "http://127.0.0.1:23373",
     "apiToken": "paste-a-personal-access-token-from-Beeper-Desktop-API-settings",
     "timeoutSeconds": 8
+  },
+  "whisper": {
+    "enabled": false,
+    "baseUrl": "http://127.0.0.1:8000",
+    "model": "",
+    "timeoutSeconds": 30
   }
 }

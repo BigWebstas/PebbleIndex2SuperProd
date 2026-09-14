@@ -115,4 +115,26 @@ public class AppConfigTests : IDisposable
         Assert.Equal("http://127.0.0.1:3876", config.SuperProductivity.BaseUrl);
         Assert.Equal("http://127.0.0.1:41184", config.Joplin.BaseUrl);
     }
+
+    [Theory]
+    [InlineData(1, 5)]
+    [InlineData(999, 120)]
+    public void Normalize_ClampsWhisperTimeoutSeconds(int input, int expected)
+    {
+        File.WriteAllText(ConfigPath, $$"""{ "whisper": { "timeoutSeconds": {{input}} } }""");
+
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.Equal(expected, config.Whisper.TimeoutSeconds);
+    }
+
+    [Fact]
+    public void Normalize_DefaultsBlankWhisperBaseUrl()
+    {
+        File.WriteAllText(ConfigPath, """{ "whisper": { "baseUrl": "" } }""");
+
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.Equal("http://127.0.0.1:8000", config.Whisper.BaseUrl);
+    }
 }

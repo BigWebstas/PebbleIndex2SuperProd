@@ -143,6 +143,32 @@ public sealed class WebhookServer : IAsyncDisposable
                 HasAudio = audio is not null,
                 AudioSizeBytes = audioSize,
             };
+
+            // Pebble normally transcribes on-device; this only fires for a genuinely audio-only
+            // webhook, and never overrides a transcription Pebble already sent.
+            if (string.IsNullOrWhiteSpace(payload.Transcription) && audio is not null && _config.Whisper.Enabled)
+            {
+                try
+                {
+                    using var audioBytes = new MemoryStream();
+                    await audio.CopyToAsync(audioBytes, CancellationToken.None);
+                    using var whisper = new WhisperClient(_config.Whisper);
+                    var text = await whisper.TranscribeAsync(audioBytes.ToArray(), audio.FileName, CancellationToken.None);
+                    if (text is not null)
+                    {
+                        _log.Info($"Whisper transcribed audio from {remote} ({audioBytes.Length} bytes): {text.Length} chars");
+                        payload = payload with { Transcription = text };
+                    }
+                    else
+                    {
+                        _log.Warn("Whisper returned no usable text — falling back to normal handling");
+                    }
+                }
+                catch (Exception ex) when (ex is WhisperApiException or HttpRequestException or TaskCanceledException)
+                {
+                    _log.Warn($"Whisper transcription failed, falling back to normal handling: {ex.Message}");
+                }
+            }
         }
         catch (Exception ex)
         {

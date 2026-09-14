@@ -49,6 +49,9 @@ public sealed class TrayController : IDisposable
     private SpHealth _aiHealth = SpHealth.Unknown;
     private bool _aiHealthCheckInFlight;
 
+    private SpHealth _whisperHealth = SpHealth.Unknown;
+    private bool _whisperHealthCheckInFlight;
+
     private IReadOnlyList<SpNamedItem> _projects = Array.Empty<SpNamedItem>();
     private IReadOnlyList<SpNamedItem> _tags = Array.Empty<SpNamedItem>();
     private IReadOnlyList<SpNamedItem> _notebooks = Array.Empty<SpNamedItem>();
@@ -112,6 +115,7 @@ public sealed class TrayController : IDisposable
             await RunGoogleCalendarHealthCheckAsync(manual: false);
             await RunBeeperHealthCheckAsync(manual: false);
             await RunAiHealthCheckAsync(manual: false);
+            await RunWhisperHealthCheckAsync(manual: false);
         };
         ConfigureHealthTimer();
 
@@ -169,6 +173,7 @@ public sealed class TrayController : IDisposable
         menu.Add(new NativeMenuItem("Joplin notes") { Menu = BuildJoplinSubmenu() });
         menu.Add(new NativeMenuItem("Google Calendar") { Menu = BuildGoogleCalendarSubmenu() });
         menu.Add(new NativeMenuItem("Beeper messages") { Menu = BuildBeeperSubmenu() });
+        menu.Add(new NativeMenuItem("Whisper transcription") { Menu = BuildWhisperSubmenu() });
         menu.Add(new NativeMenuItemSeparator());
 
         menu.Add(Action("Edit config…", OpenConfig));
@@ -255,6 +260,17 @@ public sealed class TrayController : IDisposable
                 _ => "AI not checked yet",
             };
             line += $"  ·  {ai}";
+        }
+
+        if (_config.Whisper.Enabled)
+        {
+            var whisper = _whisperHealth switch
+            {
+                SpHealth.Ok => "Whisper reachable",
+                SpHealth.Unreachable => "Whisper unreachable",
+                _ => "Whisper not checked yet",
+            };
+            line += $"  ·  {whisper}";
         }
 
         return line;
@@ -754,6 +770,28 @@ public sealed class TrayController : IDisposable
         return m;
     }
 
+    private NativeMenu BuildWhisperSubmenu()
+    {
+        var m = new NativeMenu();
+        var cfg = _config.Whisper;
+
+        var enabled = new NativeMenuItem("Enabled")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = cfg.Enabled,
+        };
+        enabled.Click += (_, _) => ToggleWhisperEnabled();
+        m.Add(enabled);
+
+        m.Add(Action("Set server URL…", () => _ = SetWhisperBaseUrlAsync()));
+        m.Add(Action("Set model…", () => _ = SetWhisperModelAsync()));
+        m.Add(Action("Test connection", () => _ = RunWhisperHealthCheckAsync(manual: true)));
+        m.Add(Disabled($"Server: {cfg.BaseUrl}"));
+        m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.Model) ? "Model: server default" : $"Model: {cfg.Model}"));
+        m.Add(Disabled("Local, OpenAI-compatible Whisper server — fallback only, when Pebble sends audio but no text"));
+        return m;
+    }
+
     // ---- server lifecycle --------------------------------------------
 
     private async Task StartServerAsync(bool initial = false)
@@ -773,6 +811,7 @@ public sealed class TrayController : IDisposable
             _ = RunGoogleCalendarHealthCheckAsync(manual: false);
             _ = RunBeeperHealthCheckAsync(manual: false);
             _ = RunAiHealthCheckAsync(manual: false);
+            _ = RunWhisperHealthCheckAsync(manual: false);
             _ = RefreshListsAsync(notifyOnError: false);
         }
         catch (Exception ex)
@@ -832,6 +871,7 @@ public sealed class TrayController : IDisposable
             _googleHealth = SpHealth.Unknown;
             _beeperHealth = SpHealth.Unknown;
             _aiHealth = SpHealth.Unknown;
+            _whisperHealth = SpHealth.Unknown;
             _captureTag = new CaptureTagResolver(_config.SuperProductivity, _log);
             _classifier = new AiTaskClassifier(_config.AiClassifier, _log);
             ConfigureHealthTimer();
@@ -1075,6 +1115,63 @@ public sealed class TrayController : IDisposable
         }
     }
 
+    /// <summary>Only runs while Whisper transcription is enabled.</summary>
+    private async Task RunWhisperHealthCheckAsync(bool manual)
+    {
+        if (!_config.Whisper.Enabled)
+        {
+            if (manual) Notify("Whisper", "Disabled — nothing to test.", NotifyKind.Error, force: true);
+            return;
+        }
+        if (!manual && _whisperHealthCheckInFlight) return;
+        _whisperHealthCheckInFlight = true;
+        try
+        {
+            SpHealth state;
+            string message;
+            try
+            {
+                using var whisper = new WhisperClient(_config.Whisper);
+                message = await whisper.TestAsync();
+                state = SpHealth.Ok;
+            }
+            catch (Exception ex)
+            {
+                message = ex.Message;
+                state = SpHealth.Unreachable;
+            }
+
+            var prev = _whisperHealth;
+            _whisperHealth = state;
+
+            if (state != prev)
+            {
+                if (state == SpHealth.Ok)
+                    _log.Info(prev == SpHealth.Unreachable
+                        ? $"Whisper connection restored — {message}"
+                        : $"Whisper reachable — {message}");
+                else
+                    _log.Warn($"Whisper unreachable — {message}");
+
+                if (!manual && state == SpHealth.Unreachable && prev != SpHealth.Unreachable)
+                {
+                    Notify("Whisper unreachable", message, NotifyKind.Warning);
+                    _ = CreateOutageTaskAsync("Whisper", message);
+                }
+
+                RefreshTray();
+            }
+
+            if (manual)
+                Notify(state == SpHealth.Ok ? "Whisper" : "Whisper — not reachable",
+                    message, state == SpHealth.Ok ? NotifyKind.Info : NotifyKind.Error, force: true);
+        }
+        finally
+        {
+            _whisperHealthCheckInFlight = false;
+        }
+    }
+
     /// <summary>Only runs while the AI classifier is enabled and its selected provider has a
     /// credential set.</summary>
     private async Task RunAiHealthCheckAsync(bool manual)
@@ -1167,6 +1264,13 @@ public sealed class TrayController : IDisposable
             await RunAiHealthCheckAsync(manual: false);
             lines.Add($"AI classifier ({DescribeProvider(_config.AiClassifier.Provider)}): {DescribeHealth(_aiHealth)}");
             allOk &= _aiHealth == SpHealth.Ok;
+        }
+
+        if (_config.Whisper.Enabled)
+        {
+            await RunWhisperHealthCheckAsync(manual: false);
+            lines.Add($"Whisper: {DescribeHealth(_whisperHealth)}");
+            allOk &= _whisperHealth == SpHealth.Ok;
         }
 
         Notify(allOk ? "All connections OK" : "Some connections failed",
@@ -1556,6 +1660,37 @@ public sealed class TrayController : IDisposable
 
         _config.Beeper.ApiToken = value.Trim();
         SaveConfig("Beeper API token updated");
+    }
+
+    // ---- Whisper ------------------------------------------------------
+
+    private void ToggleWhisperEnabled()
+    {
+        var cfg = _config.Whisper;
+        cfg.Enabled = !cfg.Enabled;
+        SaveConfig($"Whisper transcription {(cfg.Enabled ? "enabled" : "disabled")}");
+    }
+
+    private async Task SetWhisperBaseUrlAsync()
+    {
+        var value = await InputDialog.ShowAsync("Whisper server URL",
+            "Paste the base URL of your local Whisper server, e.g. http://127.0.0.1:8000.\n" +
+            "Leave blank to keep the current one.");
+        if (value is null || value.Trim().Length == 0) return;
+
+        _config.Whisper.BaseUrl = value.Trim();
+        SaveConfig("Whisper server URL updated");
+    }
+
+    private async Task SetWhisperModelAsync()
+    {
+        var value = await InputDialog.ShowAsync("Whisper model",
+            "Model name to request, if your server serves more than one.\n" +
+            "Leave blank to use whatever the server has loaded by default.");
+        if (value is null) return;
+
+        _config.Whisper.Model = value.Trim();
+        SaveConfig(string.IsNullOrWhiteSpace(value) ? "Whisper model cleared (server default)" : "Whisper model updated");
     }
 
     private void SaveConfig(string what)

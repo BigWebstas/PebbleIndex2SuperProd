@@ -68,6 +68,9 @@ public sealed class BeeperClient : IDisposable
 
         if (resp.StatusCode == System.Net.HttpStatusCode.Unauthorized)
             throw new BeeperApiException("Beeper rejected the API token. Create a new one in Beeper Desktop's API settings.");
+        if (resp.StatusCode == System.Net.HttpStatusCode.Forbidden && body.Contains("\"write\"", StringComparison.OrdinalIgnoreCase))
+            throw new BeeperApiException("Beeper token is missing the \"write\" scope needed to send messages — " +
+                                          "create a new token with write access in Beeper Desktop's API settings.");
         if (!resp.IsSuccessStatusCode)
             throw new BeeperApiException($"Beeper returned HTTP {(int)resp.StatusCode}: {Truncate(body)}");
 

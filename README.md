@@ -16,6 +16,8 @@ Pebble Index 01 ──HTTPS──▶ your tunnel ──▶ Index2SP :8787/pebble
 
 - Every note becomes an SP task — title from the transcription, full text + metadata in notes.
 - SP unreachable? Queued to a local outbox, retried until it lands.
+- Audio with no transcription (Pebble sent audio only)? With `whisper` on, a local Whisper server
+  transcribes it instead of the webhook being rejected.
 - With `aiClassifier` on, the AI also: picks project/tags, splits multi-item shopping lists,
   sets due dates, and — per destination toggle — files notes to Joplin, adds calendar events,
   or sends a Beeper message. **Beeper sends immediately, with no confirmation step.**
@@ -41,9 +43,9 @@ Grab a [release](https://github.com/BigWebstas/PebbleIndex2SuperProd/releases/la
 
 Tray → **Edit config…** opens `config.json` (`%APPDATA%\Index2SP\` on Windows,
 `~/.config/Index2SP/` on Linux); **Reload config** applies changes. Every destination —
-Super Productivity, AI classifier, Joplin, Google Calendar, Beeper — has its own tray submenu:
-enable, credentials, and **Test connection** (or **Test all connections** for one combined
-check). Full field reference: [`config.example.json`](config.example.json).
+Super Productivity, AI classifier, Joplin, Google Calendar, Beeper, Whisper — has its own tray
+submenu: enable, credentials, and **Test connection** (or **Test all connections** for one
+combined check). Full field reference: [`config.example.json`](config.example.json).
 
 **AI classifier → Provider** picks the backend: Claude, Gemini, OpenAI, or a local Ollama server.
 Each has its own credential/model submenu; only the selected provider's needs to be filled in.
@@ -65,6 +67,11 @@ Two setups need an extra step first:
   Naming a platform ("text Abbie on Telegram") picks that chat when the recipient has several;
   with no platform named, it only sends when the recipient matches exactly one chat.
 
+**Whisper** needs a local, OpenAI-compatible speech-to-text server already running — whisper.cpp's
+own `server` example, faster-whisper-server, or LocalAI all work, since they share the same
+`POST /v1/audio/transcriptions` contract. It's a fallback only: Pebble's own transcription is
+always used when present, and this only fires for a genuinely audio-only webhook.
+
 ## Build from source
 
 ```bash
@@ -77,7 +84,7 @@ CI builds every push/PR; pushing a `v*` tag cuts a [GitHub Release](https://gith
 
 ## Limitations
 
-- Audio-only webhooks are rejected (422) — no text, no task.
+- Audio-only webhooks are rejected (422) — no text, no task — unless `whisper` is on.
 - No recurring tasks or subtasks (the SP REST API doesn't support them).
 - Outbox retries aren't deduplicated — a lost reply can occasionally create a duplicate.
 - No OS-level crash-restart — a hard crash stays down until you relaunch (in-process bugs are
