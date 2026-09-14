@@ -102,3 +102,5 @@ CI builds every push/PR; pushing a `v*` tag cuts a [GitHub Release](https://gith
   duplicate files on disk.
 - No OS-level crash-restart — a hard crash stays down until you relaunch (in-process bugs are
   caught and don't crash the app; see above).
+
+  <meta name="google-site-verification" content="if9JMXF3y3eDA310RTuN6rJy9UT2z6y74piwnNqEvhY" />
