@@ -1,4 +1,4 @@
-# Pebble Index → Super Productivity, Joplin, Calendar, Beeper
+# Pebble Index → Super Productivity, Joplin, Calendar and Telegram
 
 [![Build](https://github.com/BigWebstas/PebbleIndex2SuperProd/actions/workflows/build.yml/badge.svg)](https://github.com/BigWebstas/PebbleIndex2SuperProd/actions/workflows/build.yml)
 
