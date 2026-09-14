@@ -15,7 +15,7 @@
       <Rectangle x:Name="Accent" Grid.Column="0" RadiusX="2" RadiusY="2" VerticalAlignment="Stretch" />
       <StackPanel Grid.Column="2" Spacing="3">
         <TextBlock x:Name="TitleText" FontWeight="SemiBold" Foreground="#F2F2F2" />
-        <TextBlock x:Name="BodyText" TextWrapping="Wrap" MaxLines="4" Foreground="#C8C8C8" FontSize="12" />
+        <TextBlock x:Name="BodyText" TextWrapping="Wrap" MaxLines="10" Foreground="#C8C8C8" FontSize="12" />
       </StackPanel>
     </Grid>
   </Border>
