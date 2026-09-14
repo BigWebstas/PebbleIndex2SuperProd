@@ -465,8 +465,8 @@ public sealed class TrayController : IDisposable
         exclusiveRouting.Click += (_, _) => ToggleExclusiveRouting();
         m.Add(exclusiveRouting);
         m.Add(Disabled(cfg.ExclusiveRouting
-            ? "On: SP is the fallback if it fails"
-            : "Off: SP task is always created"));
+            ? "On: SP task only on failure"
+            : "Off: SP task created alongside"));
 
         m.Add(new NativeMenuItemSeparator());
         m.Add(Action("Test connection", () => _ = RunAiHealthCheckAsync(manual: true)));
