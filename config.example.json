@@ -65,15 +65,16 @@
   },
   "webSearch": {
     "enabled": false,
+    "chatId": "",
     "maxUses": 3
   },
   "webhookReceipt": {
-    "enabled": false
+    "enabled": false,
+    "chatId": ""
   },
   "telegram": {
     "enabled": false,
     "botToken": "paste-a-bot-token-from-BotFather",
-    "chatId": "",
     "timeoutSeconds": 8
   }
 }

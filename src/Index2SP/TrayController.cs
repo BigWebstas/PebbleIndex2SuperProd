@@ -894,12 +894,9 @@ public sealed class TrayController : IDisposable
 
         m.Add(Action(string.IsNullOrWhiteSpace(cfg.BotToken) ? "Set bot token…" : "Change bot token…",
             () => _ = SetTelegramBotTokenAsync()));
-        m.Add(Action(string.IsNullOrWhiteSpace(cfg.ChatId) ? "Set chat ID…" : "Change chat ID…",
-            () => _ = SetTelegramChatIdAsync()));
         m.Add(Action("Test connection", () => _ = RunTelegramHealthCheckAsync(manual: true)));
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.BotToken) ? "No bot token set" : "Bot token is set"));
-        m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.ChatId) ? "No chat ID set" : $"Chat ID: {cfg.ChatId}"));
-        m.Add(Disabled("Used by web search and webhook receipt — not the general Beeper message feature"));
+        m.Add(Disabled("Just the bot connection — set each destination chat under Web search / Webhook receipt"));
         return m;
     }
 
@@ -938,8 +935,10 @@ public sealed class TrayController : IDisposable
         enabled.Click += (_, _) => ToggleWebSearchEnabled();
         m.Add(enabled);
 
-        m.Add(Disabled("Searches via Claude's web search tool, sent through the Telegram bot below"));
-        m.Add(Disabled("Needs a Claude API key and Telegram enabled"));
+        m.Add(Action(string.IsNullOrWhiteSpace(cfg.ChatId) ? "Set Telegram chat ID…" : "Change Telegram chat ID…",
+            () => _ = SetWebSearchChatIdAsync()));
+        m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.ChatId) ? "No chat ID set" : $"Chat ID: {cfg.ChatId}"));
+        m.Add(Disabled("Searches via Claude's web search tool — needs a Claude API key and Telegram enabled"));
         return m;
     }
 
@@ -956,8 +955,10 @@ public sealed class TrayController : IDisposable
         enabled.Click += (_, _) => ToggleWebhookReceiptEnabled();
         m.Add(enabled);
 
-        m.Add(Disabled("Sends \"Webhook Received, ...\" for every capture through the Telegram bot below"));
-        m.Add(Disabled("Needs Telegram enabled"));
+        m.Add(Action(string.IsNullOrWhiteSpace(cfg.ChatId) ? "Set Telegram chat ID…" : "Change Telegram chat ID…",
+            () => _ = SetWebhookReceiptChatIdAsync()));
+        m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.ChatId) ? "No chat ID set" : $"Chat ID: {cfg.ChatId}"));
+        m.Add(Disabled("Sends \"Webhook Received, ...\" for every capture — needs Telegram enabled"));
         return m;
     }
 
@@ -2092,18 +2093,6 @@ public sealed class TrayController : IDisposable
         SaveConfig("Telegram bot token updated");
     }
 
-    private async Task SetTelegramChatIdAsync()
-    {
-        var value = await InputDialog.ShowAsync("Telegram chat ID",
-            "The numeric chat ID (or \"@channelusername\") the bot sends to — message the bot " +
-            "once, then check its getUpdates response, or ask @userinfobot.\n" +
-            "Leave blank to keep the current one.", masked: false);
-        if (value is null || value.Trim().Length == 0) return;
-
-        _config.Telegram.ChatId = value.Trim();
-        SaveConfig("Telegram chat ID updated");
-    }
-
     // ---- Whisper ------------------------------------------------------
 
     private void ToggleWhisperEnabled()
@@ -2144,6 +2133,18 @@ public sealed class TrayController : IDisposable
         SaveConfig($"Web search {(cfg.Enabled ? "enabled" : "disabled")}");
     }
 
+    private async Task SetWebSearchChatIdAsync()
+    {
+        var value = await InputDialog.ShowAsync("Web search Telegram chat ID",
+            "The numeric chat ID (or \"@channelusername\") web-search summaries go to — message " +
+            "the bot from that chat once, then check its getUpdates response, or ask " +
+            "@userinfobot.\nLeave blank to keep the current one.", masked: false);
+        if (value is null || value.Trim().Length == 0) return;
+
+        _config.WebSearch.ChatId = value.Trim();
+        SaveConfig("Web search chat ID updated");
+    }
+
     // ---- Webhook receipt --------------------------------------------
 
     private void ToggleWebhookReceiptEnabled()
@@ -2151,6 +2152,18 @@ public sealed class TrayController : IDisposable
         var cfg = _config.WebhookReceipt;
         cfg.Enabled = !cfg.Enabled;
         SaveConfig($"Webhook receipt {(cfg.Enabled ? "enabled" : "disabled")}");
+    }
+
+    private async Task SetWebhookReceiptChatIdAsync()
+    {
+        var value = await InputDialog.ShowAsync("Webhook receipt Telegram chat ID",
+            "The numeric chat ID (or \"@channelusername\") receipts go to — message the bot from " +
+            "that chat once, then check its getUpdates response, or ask @userinfobot.\n" +
+            "Leave blank to keep the current one.", masked: false);
+        if (value is null || value.Trim().Length == 0) return;
+
+        _config.WebhookReceipt.ChatId = value.Trim();
+        SaveConfig("Webhook receipt chat ID updated");
     }
 
 

@@ -349,9 +349,17 @@ public sealed class WebhookServer : IAsyncDisposable
                 }
             }
 
+            // Gemini/OpenAI search under their own credential; Ollama has none of its own and
+            // falls back to Claude, so it needs the same key Claude itself would.
+            var hasSearchCredential = _config.AiClassifier.Provider switch
+            {
+                "gemini" => !string.IsNullOrWhiteSpace(_config.AiClassifier.GeminiApiKey),
+                "openai" => !string.IsNullOrWhiteSpace(_config.AiClassifier.OpenAiApiKey),
+                _ => !string.IsNullOrWhiteSpace(_config.AiClassifier.ApiKey),
+            };
             var includeWebSearch = _config.WebSearch.Enabled && _config.Telegram.Enabled &&
-                !string.IsNullOrWhiteSpace(_config.Telegram.BotToken) && !string.IsNullOrWhiteSpace(_config.Telegram.ChatId) &&
-                !string.IsNullOrWhiteSpace(_config.AiClassifier.ApiKey);
+                !string.IsNullOrWhiteSpace(_config.Telegram.BotToken) && !string.IsNullOrWhiteSpace(_config.WebSearch.ChatId) &&
+                hasSearchCredential;
 
             var referenceTime = (recordedAt ?? DateTimeOffset.UtcNow).ToLocalTime();
             var result = await _classifier.ClassifyAsync(
@@ -486,9 +494,10 @@ public sealed class WebhookServer : IAsyncDisposable
     /// </summary>
     private async Task SendWebhookReceiptAsync(string captureKind)
     {
-        if (!_config.WebhookReceipt.Enabled) return;
+        var cfg = _config.WebhookReceipt;
+        if (!cfg.Enabled || string.IsNullOrWhiteSpace(cfg.ChatId)) return;
 
-        await SendTelegramMessageAsync($"Webhook Received, {captureKind}");
+        await SendTelegramMessageAsync(cfg.ChatId, $"Webhook Received, {captureKind}");
     }
 
     /// <summary>
@@ -507,24 +516,24 @@ public sealed class WebhookServer : IAsyncDisposable
             return false;
         }
 
-        return await SendTelegramMessageAsync($"🔍 {query}\n\n{summary}");
+        return await SendTelegramMessageAsync(_config.WebSearch.ChatId, $"🔍 {query}\n\n{summary}");
     }
 
     /// <summary>
     /// Best-effort Telegram delivery — used only for web-search summaries and webhook receipts,
-    /// both of which always go to the one chat the bot is configured for. The general "send a
-    /// message to X" feature stays on Beeper (see <see cref="SendBeeperMessageAsync"/>), which is
-    /// where recipient search across whatever chats already exist actually matters.
+    /// each to its own configured chat id. The general "send a message to X" feature stays on
+    /// Beeper (see <see cref="SendBeeperMessageAsync"/>), which is where recipient search across
+    /// whatever chats already exist actually matters.
     /// </summary>
-    private async Task<bool> SendTelegramMessageAsync(string text)
+    private async Task<bool> SendTelegramMessageAsync(string chatId, string text)
     {
         var cfg = _config.Telegram;
-        if (!cfg.Enabled || string.IsNullOrWhiteSpace(cfg.BotToken) || string.IsNullOrWhiteSpace(cfg.ChatId)) return false;
+        if (!cfg.Enabled || string.IsNullOrWhiteSpace(cfg.BotToken) || string.IsNullOrWhiteSpace(chatId)) return false;
 
         try
         {
             using var telegram = new TelegramClient(cfg);
-            await telegram.SendMessageAsync(cfg.ChatId, text, CancellationToken.None);
+            await telegram.SendMessageAsync(chatId, text, CancellationToken.None);
             _log.Info($"Sent Telegram message: \"{text}\"");
             return true;
         }

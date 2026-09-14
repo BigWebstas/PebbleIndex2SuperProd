@@ -68,15 +68,19 @@ public sealed class AppConfig
 
     /// <summary>
     /// Optional: when the AI classifier decides a transcription is a web-search request
-    /// ("search the web for...", "google...", "what is the latest version of..."), runs it
-    /// through Claude's built-in web search tool and sends the summary via the Telegram bot.
-    /// Always uses the Claude/Anthropic credential specifically for the search itself — this
-    /// capability isn't available through the other providers — regardless of which one is
-    /// selected for classification. Requires aiClassifier.apiKey and telegram.enabled.
+    /// ("search the web for...", "google...", "what is the latest version of..."), searches via
+    /// whichever provider is selected for classification — Claude and Gemini each have a real
+    /// built-in search tool; OpenAI's lives on its separate Responses API. Ollama has no search of
+    /// its own, so it falls back to Claude when aiClassifier.apiKey is set, and skips otherwise.
+    /// Sends the summary to one Telegram chat. Requires telegram.enabled.
     /// </summary>
     public sealed class WebSearchConfig
     {
         public bool Enabled { get; set; } = false;
+
+        /// <summary>Telegram chat id (or "@channelusername") web-search summaries go to. Its own
+        /// setting, independent of webhookReceipt's — the two can go to different chats.</summary>
+        public string ChatId { get; set; } = "";
 
         /// <summary>How many searches Claude may run to answer one query. Clamped 1–10.</summary>
         public int MaxUses { get; set; } = 3;
@@ -93,16 +97,20 @@ public sealed class AppConfig
     public sealed class WebhookReceiptConfig
     {
         public bool Enabled { get; set; } = false;
+
+        /// <summary>Telegram chat id (or "@channelusername") receipts go to. Its own setting,
+        /// independent of webSearch's — the two can go to different chats.</summary>
+        public string ChatId { get; set; } = "";
     }
 
     public TelegramConfig Telegram { get; set; } = new();
 
     /// <summary>
-    /// Optional: a Telegram bot used to deliver web-search summaries and webhook receipts — both
-    /// always go to the one chat you've already talked to the bot from, so unlike Beeper there's
-    /// no per-capture recipient matching to configure. Create a bot via @BotFather to get a
-    /// token, then message the bot once and use its getUpdates response (or @userinfobot /
-    /// @RawDataBot) to find the chat id.
+    /// Optional: the bot connection used to deliver web-search summaries and webhook receipts —
+    /// each of those picks its own destination chat (webSearch.chatId / webhookReceipt.chatId),
+    /// so this only holds the bot itself. Create a bot via @BotFather to get a token, then
+    /// message the target chat once and use the bot's getUpdates response (or @userinfobot /
+    /// @RawDataBot) to find that chat's id.
     /// </summary>
     public sealed class TelegramConfig
     {
@@ -110,9 +118,6 @@ public sealed class AppConfig
 
         /// <summary>Bot token from @BotFather, e.g. "123456789:AAF...".</summary>
         public string BotToken { get; set; } = "";
-
-        /// <summary>Numeric chat id (or "@channelusername" for a channel) the bot sends to.</summary>
-        public string ChatId { get; set; } = "";
 
         /// <summary>Seconds to wait for Telegram before giving up. Clamped 2–30.</summary>
         public int TimeoutSeconds { get; set; } = 8;

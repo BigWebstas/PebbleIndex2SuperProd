@@ -253,12 +253,22 @@ public sealed class AiTaskClassifier
     }
 
     /// <summary>
-    /// Runs a real web search via Claude's built-in web search tool and returns the model's
-    /// summary text (null on any failure, or if it produced nothing usable). Always uses the
-    /// Claude/Anthropic credential specifically — this capability isn't available through the
-    /// other providers — regardless of which one is selected for classification.
+    /// Runs a real web search and returns a text summary (null on any failure, or if a provider
+    /// produced nothing usable). Uses whichever provider is currently selected for classification
+    /// — Claude and Gemini both have a real built-in search tool; OpenAI's lives on its separate
+    /// Responses API (not the Chat Completions endpoint classification uses). Ollama has no web
+    /// access of its own, so it falls back to Claude when a key is set for it, and skips search
+    /// entirely otherwise — same as any other classify failure.
     /// </summary>
-    public async Task<string?> RunWebSearchAsync(string query, int maxUses, CancellationToken ct = default)
+    public Task<string?> RunWebSearchAsync(string query, int maxUses, CancellationToken ct = default) => _config.Provider switch
+    {
+        "gemini" => RunWebSearchWithGeminiAsync(query, ct),
+        "openai" => RunWebSearchWithOpenAiAsync(query, ct),
+        "ollama" => RunWebSearchFallbackToClaudeAsync(query, maxUses, ct),
+        _ => RunWebSearchWithClaudeAsync(query, maxUses, ct),
+    };
+
+    private async Task<string?> RunWebSearchWithClaudeAsync(string query, int maxUses, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(_config.ApiKey)) return null;
 
@@ -273,8 +283,7 @@ public sealed class AiTaskClassifier
             {
                 Model = _config.Model,
                 MaxTokens = 1024,
-                Messages = [new() { Role = Role.User, Content = $"Search the web and answer concisely (2-4 " +
-                    $"sentences, no markdown formatting): {query}" }],
+                Messages = [new() { Role = Role.User, Content = SearchPrompt(query) }],
                 Tools = [new WebSearchTool20260318
                 {
                     MaxUses = maxUses,
@@ -288,19 +297,146 @@ public sealed class AiTaskClassifier
                 if (block.TryPickText(out TextBlock? text))
                     sb.Append(text.Text);
 
-            var summary = sb.ToString().Trim();
-            if (summary.Length == 0)
-            {
-                _log.Warn($"Web search for \"{query}\" produced no text summary");
-                return null;
-            }
-            return summary;
+            return NoneIfBlank(sb.ToString(), query);
         }
         catch (Exception ex) when (ex is AnthropicException or HttpRequestException or OperationCanceledException)
         {
-            _log.Warn($"Web search failed for \"{query}\": {ex.Message}");
+            _log.Warn($"Claude web search failed for \"{query}\": {ex.Message}");
             return null;
         }
+    }
+
+    /// <summary>Google's "grounding with Google Search" — a real tool on the same generateContent
+    /// endpoint classification already uses, just with tools: [{ google_search: {} }] added.</summary>
+    private async Task<string?> RunWebSearchWithGeminiAsync(string query, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(_config.GeminiApiKey)) return null;
+
+        var model = string.IsNullOrWhiteSpace(_config.GeminiModel) ? "gemini-2.5-flash" : _config.GeminiModel.Trim();
+        var url = $"https://generativelanguage.googleapis.com/v1beta/models/{Uri.EscapeDataString(model)}:generateContent";
+        var body = new
+        {
+            contents = new[] { new { role = "user", parts = new[] { new { text = SearchPrompt(query) } } } },
+            tools = new[] { new { google_search = new { } } },
+        };
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(Math.Max(_config.TimeoutSeconds, 20)));
+
+        try
+        {
+            using var http = new HttpClient();
+            using var req = new HttpRequestMessage(HttpMethod.Post, url) { Content = JsonContent.Create(body) };
+            req.Headers.Add("x-goog-api-key", _config.GeminiApiKey);
+            using var resp = await http.SendAsync(req, cts.Token);
+            var text = await resp.Content.ReadAsStringAsync(cts.Token);
+            if (!resp.IsSuccessStatusCode)
+            {
+                _log.Warn($"Gemini web search: HTTP {(int)resp.StatusCode}: {Truncate(text)}");
+                return null;
+            }
+
+            var root = JsonSerializer.Deserialize<JsonElement>(text);
+            if (!root.TryGetProperty("candidates", out var candidates) || candidates.ValueKind != JsonValueKind.Array)
+                return null;
+
+            var sb = new StringBuilder();
+            foreach (var candidate in candidates.EnumerateArray())
+            {
+                if (!candidate.TryGetProperty("content", out var content) || !content.TryGetProperty("parts", out var parts))
+                    continue;
+                foreach (var part in parts.EnumerateArray())
+                    if (part.TryGetProperty("text", out var t) && t.ValueKind == JsonValueKind.String)
+                        sb.Append(t.GetString());
+            }
+
+            return NoneIfBlank(sb.ToString(), query);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or JsonException)
+        {
+            _log.Warn($"Gemini web search failed for \"{query}\": {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>OpenAI's web search lives only on the Responses API (POST /v1/responses) — a
+    /// different endpoint and response shape than the Chat Completions API classification uses.</summary>
+    private async Task<string?> RunWebSearchWithOpenAiAsync(string query, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(_config.OpenAiApiKey)) return null;
+
+        var model = string.IsNullOrWhiteSpace(_config.OpenAiModel) ? "gpt-4o-mini" : _config.OpenAiModel.Trim();
+        var body = new
+        {
+            model,
+            input = SearchPrompt(query),
+            tools = new[] { new { type = "web_search" } },
+        };
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(Math.Max(_config.TimeoutSeconds, 20)));
+
+        try
+        {
+            using var http = new HttpClient();
+            using var req = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/responses")
+            {
+                Content = JsonContent.Create(body),
+            };
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _config.OpenAiApiKey);
+            using var resp = await http.SendAsync(req, cts.Token);
+            var text = await resp.Content.ReadAsStringAsync(cts.Token);
+            if (!resp.IsSuccessStatusCode)
+            {
+                _log.Warn($"OpenAI web search: HTTP {(int)resp.StatusCode}: {Truncate(text)}");
+                return null;
+            }
+
+            var root = JsonSerializer.Deserialize<JsonElement>(text);
+            if (!root.TryGetProperty("output", out var output) || output.ValueKind != JsonValueKind.Array)
+                return null;
+
+            var sb = new StringBuilder();
+            foreach (var item in output.EnumerateArray())
+            {
+                if (!item.TryGetProperty("type", out var typeEl) || typeEl.GetString() != "message") continue;
+                if (!item.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array) continue;
+                foreach (var block in content.EnumerateArray())
+                    if (block.TryGetProperty("text", out var t) && t.ValueKind == JsonValueKind.String)
+                        sb.Append(t.GetString());
+            }
+
+            return NoneIfBlank(sb.ToString(), query);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or JsonException)
+        {
+            _log.Warn($"OpenAI web search failed for \"{query}\": {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>Ollama has no web access of its own — falls back to Claude when a key is set for
+    /// it, regardless of Ollama being the selected classification provider; skips otherwise.</summary>
+    private Task<string?> RunWebSearchFallbackToClaudeAsync(string query, int maxUses, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(_config.ApiKey))
+        {
+            _log.Warn("Web search skipped: Ollama has no built-in search and no Claude key is set to fall back to");
+            return Task.FromResult<string?>(null);
+        }
+        _log.Info("Web search: Ollama can't search the web itself — falling back to Claude");
+        return RunWebSearchWithClaudeAsync(query, maxUses, ct);
+    }
+
+    private static string SearchPrompt(string query) =>
+        $"Search the web and answer concisely (2-4 sentences, no markdown formatting): {query}";
+
+    private string? NoneIfBlank(string text, string query)
+    {
+        var summary = text.Trim();
+        if (summary.Length > 0) return summary;
+        _log.Warn($"Web search for \"{query}\" produced no text summary");
+        return null;
     }
 
     // ---- Claude (Anthropic Messages API, official SDK) ----------------

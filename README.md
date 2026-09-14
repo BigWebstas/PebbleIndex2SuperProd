@@ -80,28 +80,33 @@ Two setups need an extra step first:
   Naming a platform ("text Abbie on Telegram") picks that chat when the recipient has several;
   with no platform named, it only sends when the recipient matches exactly one chat.
 - **Telegram** — message [@BotFather](https://t.me/BotFather) to create a bot and get a token,
-  paste it into the tray, then message your new bot once and check its `getUpdates` response
-  (or ask [@userinfobot](https://t.me/userinfobot)) for the chat ID to send to.
+  paste it into the tray. For each destination chat, message the bot from it once, then check
+  the bot's `getUpdates` response (or ask [@userinfobot](https://t.me/userinfobot)) for that
+  chat's ID — set it under **Web search** and/or **Webhook receipt**.
 
 **Whisper** needs a local, OpenAI-compatible speech-to-text server already running — whisper.cpp's
 own `server` example, faster-whisper-server, or LocalAI all work, since they share the same
 `POST /v1/audio/transcriptions` contract. It's a fallback only: Pebble's own transcription is
 always used when present, and this only fires for a genuinely audio-only webhook.
 
-**Web search** ("search the web for...", "google...", "what is the latest version of X") runs
-through Claude's built-in web search tool and sends the summary through the **Telegram** bot.
-Needs a Claude API key (regardless of which provider you picked for classification — none of the
-others expose this) and Telegram enabled.
+**Web search** ("search the web for...", "google...", "what is the latest version of X") searches
+via whichever provider is selected for classification — Claude and Gemini each have a real
+built-in search tool; OpenAI's runs on its separate Responses API. Ollama has none of its own, so
+it falls back to Claude when a Claude key is set, and skips search otherwise. The summary goes to
+the chat ID set in **Web search → Set Telegram chat ID…**. Needs Telegram enabled.
 
 **Webhook receipt** sends a short Telegram message for every capture — "Webhook Received, Note
-Created", "Webhook Received, Task Created", etc. It's a receipt, not a delivery confirmation: it
-fires as soon as Index2SP knows what the AI decided, whether or not the underlying task or
-destination actually succeeds. Needs Telegram enabled.
+Created", "Webhook Received, Task Created", etc. — to the chat ID set in **Webhook receipt →
+Set Telegram chat ID…**. It's a receipt, not a delivery confirmation: it fires as soon as
+Index2SP knows what the AI decided, whether or not the underlying task or destination actually
+succeeds. Needs Telegram enabled.
 
-**Telegram** always sends to the one chat ID you configure — unlike Beeper, there's no per-capture
-recipient matching, since a bot only knows chats it's already been messaged from. It's used only
-for web search and webhook receipt; the general "send a message to X" feature stays on Beeper,
-which is where matching a spoken name against your existing chats actually matters.
+**Telegram** only holds the bot connection — web search and webhook receipt each pick their own
+destination chat ID, so the two can go to different chats (or the same one). Unlike Beeper,
+there's no per-capture recipient matching: a bot only knows chats it's already been messaged
+from, so each chat ID is something you set up front, not something spoken. The general "send a
+message to X" feature stays on Beeper, which is where matching a spoken name against your
+existing chats actually matters.
 
 **Check for updates automatically** (on by default, bottom of the tray menu) pings GitHub once a
 day; **Check for updates** runs it on demand. A found update can be downloaded straight from the
