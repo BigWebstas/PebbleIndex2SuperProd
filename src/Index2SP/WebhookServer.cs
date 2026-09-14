@@ -213,6 +213,8 @@ public sealed class WebhookServer : IAsyncDisposable
             routing = await ApplyAiClassificationAsync(sp, taskReq, payload.Transcription!, payload.RecordedAt);
         var shoppingItems = routing.ShoppingItems;
 
+        await SendWebhookReceiptAsync(routing.CaptureKind);
+
         if (shoppingItems is null && routing.SkipSuperProductivityTask)
         {
             _log.Info($"Routed elsewhere, skipping Super Productivity task: \"{taskReq.Title}\"");
@@ -255,7 +257,19 @@ public sealed class WebhookServer : IAsyncDisposable
     /// (null when this isn't a multi-item shopping capture), and whether the main Super
     /// Productivity task should be skipped because <see cref="AppConfig.AiClassifierConfig.ExclusiveRouting"/>
     /// is on and the transcription was successfully routed to Joplin/Calendar/Beeper instead.</summary>
-    private sealed record AiRoutingResult(List<string>? ShoppingItems, bool SkipSuperProductivityTask);
+    private sealed record AiRoutingResult(List<string>? ShoppingItems, bool SkipSuperProductivityTask, string CaptureKind = "Task Created");
+
+    /// <summary>Short, human phrase for the webhook-receipt notification — priority order matters
+    /// when more than one flag is set (e.g. a note that's also date-stamped).</summary>
+    private static string DescribeCaptureKind(AiTaskClassifier.Classification result) => result switch
+    {
+        { IsWebSearch: true } => "Web Search Sent",
+        { IsMessage: true } => "Message Sent",
+        { IsCalendarEvent: true } => "Event Created",
+        { IsNote: true } => "Note Created",
+        { IsShopping: true } => "Shopping List Updated",
+        _ => "Task Created",
+    };
 
     /// <summary>
     /// Creates one task in Super Productivity, or queues it in the outbox on a transient
@@ -293,10 +307,9 @@ public sealed class WebhookServer : IAsyncDisposable
     /// replaced by one bare shopping item, capped the same way PayloadConverter caps titles.</summary>
     private static SpTaskRequest ForShoppingItem(SpTaskRequest template, string item, int titleMaxLength)
     {
-        var title = item.Length <= titleMaxLength ? item : item[..(titleMaxLength - 1)].TrimEnd() + "…";
         return new SpTaskRequest
         {
-            Title = title,
+            Title = PayloadConverter.CapTitle(item, titleMaxLength),
             Notes = template.Notes,
             ProjectId = template.ProjectId,
             TagIds = template.TagIds is null ? null : new List<string>(template.TagIds),
@@ -336,13 +349,21 @@ public sealed class WebhookServer : IAsyncDisposable
                 }
             }
 
+            var includeWebSearch = _config.WebSearch.Enabled && _config.Beeper.Enabled &&
+                !string.IsNullOrWhiteSpace(_config.WebSearch.BeeperRecipient) &&
+                !string.IsNullOrWhiteSpace(_config.AiClassifier.ApiKey);
+
             var referenceTime = (recordedAt ?? DateTimeOffset.UtcNow).ToLocalTime();
             var result = await _classifier.ClassifyAsync(
-                transcription, projects, tags, joplinTags, referenceTime, _config.Beeper.Enabled, CancellationToken.None);
+                transcription, projects, tags, joplinTags, referenceTime, _config.Beeper.Enabled, includeWebSearch, CancellationToken.None);
             if (result is null) return new AiRoutingResult(null, false);
 
             if (result.ProjectId is not null) taskReq.ProjectId = result.ProjectId;
             if (result.TagIds.Count > 0) taskReq.TagIds = result.TagIds;
+            // Strips command phrasing ("add a task to", "remind me to") from the task's title.
+            // A multi-item shopping capture overwrites this again per item below — harmless.
+            if (result.TaskTitle is not null)
+                taskReq.Title = PayloadConverter.CapTitle(result.TaskTitle, _config.TitleMaxLength);
 
             var joplinSent = false;
             if (result.IsNote && _config.Joplin.Enabled)
@@ -386,12 +407,16 @@ public sealed class WebhookServer : IAsyncDisposable
             if (result.IsMessage && _config.Beeper.Enabled && result.MessageRecipient is not null && result.MessageText is not null)
                 messageSent = await SendBeeperMessageAsync(result.MessageRecipient, result.MessageText, result.MessagePlatform);
 
+            var webSearchSent = false;
+            if (result.IsWebSearch && includeWebSearch && result.WebSearchQuery is not null)
+                webSearchSent = await RunWebSearchAndSendAsync(result.WebSearchQuery);
+
             if (!result.IsShopping)
             {
                 // Skip the Super Productivity task only when routing elsewhere actually worked —
                 // a failed/disabled destination still falls back to the normal SP task below.
-                var skip = _config.AiClassifier.ExclusiveRouting && (joplinSent || calendarCreated || messageSent);
-                return new AiRoutingResult(null, skip);
+                var skip = _config.AiClassifier.ExclusiveRouting && (joplinSent || calendarCreated || messageSent || webSearchSent);
+                return new AiRoutingResult(null, skip, DescribeCaptureKind(result));
             }
 
             // A configured shopping project always wins over the classifier's own pick —
@@ -400,7 +425,7 @@ public sealed class WebhookServer : IAsyncDisposable
             if (!string.IsNullOrWhiteSpace(shoppingProjectId))
                 taskReq.ProjectId = shoppingProjectId.Trim();
 
-            return new AiRoutingResult(result.ShoppingItems.Count > 0 ? result.ShoppingItems : null, false);
+            return new AiRoutingResult(result.ShoppingItems.Count > 0 ? result.ShoppingItems : null, false, "Shopping List Updated");
         }
         catch (Exception ex) when (ex is SpApiException or HttpRequestException or TaskCanceledException)
         {
@@ -451,6 +476,41 @@ public sealed class WebhookServer : IAsyncDisposable
             _log.Warn($"Could not create Google Calendar event: {ex.Message}");
             return false;
         }
+    }
+
+    /// <summary>
+    /// Best-effort receipt for every webhook Index2SP handles — "Webhook Received, Note Created"
+    /// and so on, naming whatever the classifier (or its absence) decided. Fires regardless of
+    /// whether the underlying Super Productivity task or destination actually succeeds; this is
+    /// only ever "we got it and this is what we think it is," not a delivery confirmation.
+    /// </summary>
+    private async Task SendWebhookReceiptAsync(string captureKind)
+    {
+        var cfg = _config.WebhookReceipt;
+        if (!cfg.Enabled || !_config.Beeper.Enabled || string.IsNullOrWhiteSpace(cfg.BeeperRecipient)) return;
+
+        await SendBeeperMessageAsync(cfg.BeeperRecipient, $"Webhook Received, {captureKind}", platform: null);
+    }
+
+    /// <summary>
+    /// Best-effort web search for transcriptions the classifier marked as "search the web for
+    /// X" — runs the search via Claude, then sends the summary to the one configured Beeper
+    /// recipient. Normally additive — the Super Productivity task is created either way — but
+    /// with aiClassifier.exclusiveRouting on, a true result here tells the caller to skip that
+    /// task instead. Reuses <see cref="SendBeeperMessageAsync"/> for delivery, so an ambiguous or
+    /// missing recipient match behaves exactly like a regular message.
+    /// </summary>
+    private async Task<bool> RunWebSearchAndSendAsync(string query)
+    {
+        var summary = await _classifier.RunWebSearchAsync(query, _config.WebSearch.MaxUses, CancellationToken.None);
+        if (summary is null)
+        {
+            _log.Warn($"Web search skipped sending: no summary for \"{query}\"");
+            return false;
+        }
+
+        var text = $"🔍 {query}\n\n{summary}";
+        return await SendBeeperMessageAsync(_config.WebSearch.BeeperRecipient, text, platform: null);
     }
 
     /// <summary>

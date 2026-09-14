@@ -41,6 +41,14 @@ public class PayloadConverterTests
         Assert.EndsWith("…", task.Title);
     }
 
+    [Theory]
+    [InlineData("Buy milk", 10, "Buy milk")]
+    [InlineData("Buy milk and eggs", 10, "Buy milk…")]
+    public void CapTitle_TruncatesOnlyWhenOverTheLimit(string title, int max, string expected)
+    {
+        Assert.Equal(expected, PayloadConverter.CapTitle(title, max));
+    }
+
     [Fact]
     public void ToTask_CollapsesInternalWhitespaceInTitle()
     {

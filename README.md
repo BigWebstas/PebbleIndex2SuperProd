@@ -18,9 +18,12 @@ Pebble Index 01 ──HTTPS──▶ your tunnel ──▶ Index2SP :8787/pebble
 - SP unreachable? Queued to a local outbox, retried until it lands.
 - Audio with no transcription (Pebble sent audio only)? With `whisper` on, a local Whisper server
   transcribes it instead of the webhook being rejected.
-- With `aiClassifier` on, the AI also: picks project/tags, splits multi-item shopping lists,
-  sets due dates, and — per destination toggle — files notes to Joplin, adds calendar events,
-  or sends a Beeper message. **Beeper sends immediately, with no confirmation step.**
+- With `aiClassifier` on, the AI also: cleans the task title (strips "add a task to", "remind
+  me to", "send a message to X saying", etc. down to just the content), picks project/tags,
+  splits multi-item shopping lists, sets due dates, and — per destination toggle — files notes
+  to Joplin, adds calendar events, sends a Beeper message, or runs a real web search (via
+  Claude) and sends the summary to one configured Beeper chat. **Beeper sends immediately, with
+  no confirmation step.**
 - Uncaught errors are logged and reported as an SP task instead of crashing silently.
   Integration outages get their own SP task too.
 - Checks GitHub for a newer release and flags it in the tray menu — downloads it on request,
@@ -81,6 +84,17 @@ Two setups need an extra step first:
 own `server` example, faster-whisper-server, or LocalAI all work, since they share the same
 `POST /v1/audio/transcriptions` contract. It's a fallback only: Pebble's own transcription is
 always used when present, and this only fires for a genuinely audio-only webhook.
+
+**Web search** ("search the web for...", "google...", "what is the latest version of X") runs
+through Claude's built-in web search tool and sends the summary to one fixed Beeper chat you set
+in **Web search → Set Beeper recipient…**. Needs a Claude API key (regardless of which provider
+you picked for classification — none of the others expose this) and Beeper enabled.
+
+**Webhook receipt** sends a short Beeper message for every capture — "Webhook Received, Note
+Created", "Webhook Received, Task Created", etc. — to one chat you set in **Webhook receipt →
+Set Beeper recipient…**. It's a receipt, not a delivery confirmation: it fires as soon as
+Index2SP knows what the AI decided, whether or not the underlying task or destination actually
+succeeds. Needs Beeper enabled.
 
 **Check for updates automatically** (on by default, bottom of the tray menu) pings GitHub once a
 day; **Check for updates** runs it on demand. A found update can be downloaded straight from the

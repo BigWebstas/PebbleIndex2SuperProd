@@ -208,6 +208,8 @@ public sealed class TrayController : IDisposable
         menu.Add(new NativeMenuItem("Google Calendar") { Menu = BuildGoogleCalendarSubmenu() });
         menu.Add(new NativeMenuItem("Beeper messages") { Menu = BuildBeeperSubmenu() });
         menu.Add(new NativeMenuItem("Whisper transcription") { Menu = BuildWhisperSubmenu() });
+        menu.Add(new NativeMenuItem("Web search") { Menu = BuildWebSearchSubmenu() });
+        menu.Add(new NativeMenuItem("Webhook receipt") { Menu = BuildWebhookReceiptSubmenu() });
         menu.Add(new NativeMenuItemSeparator());
 
         menu.Add(Action("Edit config…", OpenConfig));
@@ -880,6 +882,46 @@ public sealed class TrayController : IDisposable
         m.Add(Disabled($"Server: {cfg.BaseUrl}"));
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.Model) ? "Model: server default" : $"Model: {cfg.Model}"));
         m.Add(Disabled("Local, OpenAI-compatible Whisper server — fallback only, when Pebble sends audio but no text"));
+        return m;
+    }
+
+    private NativeMenu BuildWebSearchSubmenu()
+    {
+        var m = new NativeMenu();
+        var cfg = _config.WebSearch;
+
+        var enabled = new NativeMenuItem("Enabled")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = cfg.Enabled,
+        };
+        enabled.Click += (_, _) => ToggleWebSearchEnabled();
+        m.Add(enabled);
+
+        m.Add(Action(string.IsNullOrWhiteSpace(cfg.BeeperRecipient) ? "Set Beeper recipient…" : "Change Beeper recipient…",
+            () => _ = SetWebSearchRecipientAsync()));
+        m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.BeeperRecipient) ? "No recipient set" : $"Recipient: {cfg.BeeperRecipient}"));
+        m.Add(Disabled("Searches via Claude's web search tool — needs a Claude API key and Beeper enabled"));
+        return m;
+    }
+
+    private NativeMenu BuildWebhookReceiptSubmenu()
+    {
+        var m = new NativeMenu();
+        var cfg = _config.WebhookReceipt;
+
+        var enabled = new NativeMenuItem("Enabled")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = cfg.Enabled,
+        };
+        enabled.Click += (_, _) => ToggleWebhookReceiptEnabled();
+        m.Add(enabled);
+
+        m.Add(Action(string.IsNullOrWhiteSpace(cfg.BeeperRecipient) ? "Set Beeper recipient…" : "Change Beeper recipient…",
+            () => _ = SetWebhookReceiptRecipientAsync()));
+        m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.BeeperRecipient) ? "No recipient set" : $"Recipient: {cfg.BeeperRecipient}"));
+        m.Add(Disabled("Sends \"Webhook Received, ...\" for every capture — needs Beeper enabled"));
         return m;
     }
 
@@ -1957,6 +1999,46 @@ public sealed class TrayController : IDisposable
 
         _config.Whisper.Model = value.Trim();
         SaveConfig(string.IsNullOrWhiteSpace(value) ? "Whisper model cleared (server default)" : "Whisper model updated");
+    }
+
+    // ---- Web search -----------------------------------------------------
+
+    private void ToggleWebSearchEnabled()
+    {
+        var cfg = _config.WebSearch;
+        cfg.Enabled = !cfg.Enabled;
+        SaveConfig($"Web search {(cfg.Enabled ? "enabled" : "disabled")}");
+    }
+
+    private async Task SetWebSearchRecipientAsync()
+    {
+        var value = await InputDialog.ShowAsync("Web search Beeper recipient",
+            "Name to match against your existing single-person Beeper chats — every web search " +
+            "result goes to this one chat. Leave blank to keep the current one.");
+        if (value is null || value.Trim().Length == 0) return;
+
+        _config.WebSearch.BeeperRecipient = value.Trim();
+        SaveConfig("Web search recipient updated");
+    }
+
+    // ---- Webhook receipt --------------------------------------------
+
+    private void ToggleWebhookReceiptEnabled()
+    {
+        var cfg = _config.WebhookReceipt;
+        cfg.Enabled = !cfg.Enabled;
+        SaveConfig($"Webhook receipt {(cfg.Enabled ? "enabled" : "disabled")}");
+    }
+
+    private async Task SetWebhookReceiptRecipientAsync()
+    {
+        var value = await InputDialog.ShowAsync("Webhook receipt Beeper recipient",
+            "Name to match against your existing single-person Beeper chats — every webhook " +
+            "sends a short receipt here. Leave blank to keep the current one.");
+        if (value is null || value.Trim().Length == 0) return;
+
+        _config.WebhookReceipt.BeeperRecipient = value.Trim();
+        SaveConfig("Webhook receipt recipient updated");
     }
 
     private void SaveConfig(string what)

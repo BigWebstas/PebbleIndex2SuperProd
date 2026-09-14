@@ -28,9 +28,10 @@ public sealed class AiTaskClassifier
     }
 
     public sealed record Classification(
-        string? ProjectId, List<string> TagIds, bool IsNote, bool IsShopping, List<string> ShoppingItems, List<string> JoplinTagIds,
-        bool IsCalendarEvent, string? EventTitle, DateTimeOffset? EventStart, DateTimeOffset? EventEnd, bool EventAllDay,
-        bool IsMessage, string? MessageRecipient, string? MessageText, string? MessagePlatform);
+        string? ProjectId, List<string> TagIds, string? TaskTitle, bool IsNote, bool IsShopping, List<string> ShoppingItems,
+        List<string> JoplinTagIds, bool IsCalendarEvent, string? EventTitle, DateTimeOffset? EventStart, DateTimeOffset? EventEnd,
+        bool EventAllDay, bool IsMessage, string? MessageRecipient, string? MessageText, string? MessagePlatform,
+        bool IsWebSearch, string? WebSearchQuery);
 
     /// <param name="joplinTags">Existing Joplin tags, only consulted (and only asked of the AI)
     /// while <see cref="AppConfig.AiClassifierConfig.RequireTags"/> is on. Pass an empty list
@@ -40,6 +41,8 @@ public sealed class AiTaskClassifier
     /// Productivity due date and (when enabled) the Google Calendar event.</param>
     /// <param name="includeMessage">Whether to ask the AI to detect a "send a message to X" intent
     /// at all — pass the caller's Beeper enabled flag.</param>
+    /// <param name="includeWebSearch">Whether to ask the AI to detect a "search the web for X"
+    /// intent at all — pass the caller's web search + Beeper enabled flag.</param>
     public async Task<Classification?> ClassifyAsync(
         string transcription,
         IReadOnlyList<SpNamedItem> projects,
@@ -47,14 +50,15 @@ public sealed class AiTaskClassifier
         IReadOnlyList<SpNamedItem> joplinTags,
         DateTimeOffset referenceTime,
         bool includeMessage,
+        bool includeWebSearch,
         CancellationToken ct)
     {
         if (!_config.Enabled) return null;
         if (projects.Count == 0 && tags.Count == 0) return null;
 
         var requireTags = _config.RequireTags;
-        var fields = BuildFieldSpecs(requireTags, includeMessage);
-        var prompt = BuildPrompt(transcription, projects, tags, joplinTags, requireTags, referenceTime, includeMessage);
+        var fields = BuildFieldSpecs(requireTags, includeMessage, includeWebSearch);
+        var prompt = BuildPrompt(transcription, projects, tags, joplinTags, requireTags, referenceTime, includeMessage, includeWebSearch);
 
         var primary = _config.Provider;
         var args = await TryClassifyWithProviderAsync(primary, prompt, fields, ct);
@@ -75,7 +79,7 @@ public sealed class AiTaskClassifier
             return null;
         }
 
-        return BuildClassification(args, projects, tags, joplinTags, requireTags, includeMessage);
+        return BuildClassification(args, projects, tags, joplinTags, requireTags, includeMessage, includeWebSearch);
     }
 
     /// <summary>One provider attempt: null on any failure (no credential, network, timeout,
@@ -248,6 +252,57 @@ public sealed class AiTaskClassifier
         return list;
     }
 
+    /// <summary>
+    /// Runs a real web search via Claude's built-in web search tool and returns the model's
+    /// summary text (null on any failure, or if it produced nothing usable). Always uses the
+    /// Claude/Anthropic credential specifically — this capability isn't available through the
+    /// other providers — regardless of which one is selected for classification.
+    /// </summary>
+    public async Task<string?> RunWebSearchAsync(string query, int maxUses, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(_config.ApiKey)) return null;
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        // A real web search plus a written summary routinely takes longer than a classify call.
+        cts.CancelAfter(TimeSpan.FromSeconds(Math.Max(_config.TimeoutSeconds, 20)));
+
+        try
+        {
+            using var client = new AnthropicClient { ApiKey = _config.ApiKey };
+            var response = await client.Messages.Create(new MessageCreateParams
+            {
+                Model = _config.Model,
+                MaxTokens = 1024,
+                Messages = [new() { Role = Role.User, Content = $"Search the web and answer concisely (2-4 " +
+                    $"sentences, no markdown formatting): {query}" }],
+                Tools = [new WebSearchTool20260318
+                {
+                    MaxUses = maxUses,
+                    AllowedCallers = [WebSearchTool20260318AllowedCaller.Direct],
+                }],
+                ToolChoice = new ToolChoiceAny(),
+            }, cancellationToken: cts.Token);
+
+            var sb = new StringBuilder();
+            foreach (var block in response.Content)
+                if (block.TryPickText(out TextBlock? text))
+                    sb.Append(text.Text);
+
+            var summary = sb.ToString().Trim();
+            if (summary.Length == 0)
+            {
+                _log.Warn($"Web search for \"{query}\" produced no text summary");
+                return null;
+            }
+            return summary;
+        }
+        catch (Exception ex) when (ex is AnthropicException or HttpRequestException or OperationCanceledException)
+        {
+            _log.Warn($"Web search failed for \"{query}\": {ex.Message}");
+            return null;
+        }
+    }
+
     // ---- Claude (Anthropic Messages API, official SDK) ----------------
 
     private async Task<IReadOnlyDictionary<string, JsonElement>?> ClassifyWithClaudeAsync(
@@ -257,7 +312,9 @@ public sealed class AiTaskClassifier
         var response = await client.Messages.Create(new MessageCreateParams
         {
             Model = _config.Model,
-            MaxTokens = 320,
+            // The classify schema has grown (taskTitle, messagePlatform, webSearchQuery, ...) —
+            // 320 was tight enough to silently truncate the tool call and drop trailing fields.
+            MaxTokens = 1024,
             Messages = [new() { Role = Role.User, Content = prompt }],
             Tools = [ToAnthropicTool(fields)],
             ToolChoice = new ToolChoiceTool { Name = ClassifyToolName },
@@ -449,11 +506,21 @@ public sealed class AiTaskClassifier
 
     private const string ClassifyToolName = "classify";
 
-    private static List<FieldSpec> BuildFieldSpecs(bool requireTags, bool includeMessage)
+    private static List<FieldSpec> BuildFieldSpecs(bool requireTags, bool includeMessage, bool includeWebSearch)
     {
         var fields = new List<FieldSpec>
         {
             new("projectId", FieldKind.StringOrNull, "id from the project list, or null if none fit well"),
+            new("taskTitle", FieldKind.StringOrNull, "Always set this, no matter what isNote/isShopping/" +
+                "isCalendarEvent/isMessage end up being — a Super Productivity task is created either way " +
+                "and needs a real title. A short, clean title: the transcription with instruction/command " +
+                "phrasing stripped (e.g. \"add a task to\", \"remind me to\", \"add to my calendar\", \"note " +
+                "that\") so only the actual subject remains — e.g. \"submit expense report\" from \"add a " +
+                "task to submit expense report\", or \"Tell Abbie I'll be late\" from \"send a message to " +
+                "Abbie saying I'll be late\" (summarize who + what for a message, don't just repeat " +
+                "messageText). Keep it close to verbatim otherwise — don't summarize or rephrase the content " +
+                "itself, only strip the command wrapper. Return the transcription unchanged if there's " +
+                "nothing to strip. Never return null or leave this empty."),
             new("tagIds", FieldKind.StringArray, requireTags
                 ? "Required — at least one id from the tag list below. Pick the closest fit if nothing is " +
                   "a perfect match. Never return an empty array."
@@ -503,6 +570,19 @@ public sealed class AiTaskClassifier
                 "specific messaging app was named, e.g. \"telegram\", \"whatsapp\", \"signal\", \"imessage\", " +
                 "\"google messages\", \"instagram\" — from phrasing like \"message Abbie on Telegram\" or " +
                 "\"text Abbie on WhatsApp\". Null when no platform was mentioned."));
+        }
+
+        if (includeWebSearch)
+        {
+            fields.Add(new("isWebSearch", FieldKind.Boolean, "true if this is a request to search the web " +
+                "or look something up right now — e.g. \"search the web for\", \"google\", \"look up\", " +
+                "\"what is the latest version of X\", \"find out how much Y costs\". False for anything the " +
+                "user already knows and is just noting down, or a to-do that merely mentions researching " +
+                "something later rather than asking for the answer right now."));
+            fields.Add(new("webSearchQuery", FieldKind.StringOrNull, "Required when isWebSearch is true: " +
+                "just the search query itself, stripped of phrasing like \"search the web for\" or " +
+                "\"google\" — e.g. \"latest stable Rust version\" from \"search the web for the latest " +
+                "stable Rust version\". Null otherwise."));
         }
 
         return fields;
@@ -599,9 +679,13 @@ public sealed class AiTaskClassifier
 
     private Classification BuildClassification(
         IReadOnlyDictionary<string, JsonElement> input, IReadOnlyList<SpNamedItem> projects, IReadOnlyList<SpNamedItem> tags,
-        IReadOnlyList<SpNamedItem> joplinTags, bool requireTags, bool includeMessage)
+        IReadOnlyList<SpNamedItem> joplinTags, bool requireTags, bool includeMessage, bool includeWebSearch)
     {
         var projectId = input.TryGetValue("projectId", out var pEl) && pEl.ValueKind == JsonValueKind.String ? pEl.GetString() : null;
+        var taskTitle = input.TryGetValue("taskTitle", out var ttEl) && ttEl.ValueKind == JsonValueKind.String
+            ? ttEl.GetString()
+            : null;
+        if (string.IsNullOrWhiteSpace(taskTitle)) taskTitle = null;
         var tagIds = ReadStringArray(input, "tagIds");
         var isNote = input.TryGetValue("isNote", out var nEl) && nEl.ValueKind == JsonValueKind.True;
         var isShopping = input.TryGetValue("isShopping", out var sEl) && sEl.ValueKind == JsonValueKind.True;
@@ -642,18 +726,33 @@ public sealed class AiTaskClassifier
                 isMessage = false;
         }
 
+        var isWebSearch = false;
+        string? webSearchQuery = null;
+        if (includeWebSearch)
+        {
+            isWebSearch = input.TryGetValue("isWebSearch", out var wsEl) && wsEl.ValueKind == JsonValueKind.True;
+            webSearchQuery = input.TryGetValue("webSearchQuery", out var wqEl) && wqEl.ValueKind == JsonValueKind.String
+                ? wqEl.GetString()
+                : null;
+            // A search needs an actual query to be usable.
+            if (isWebSearch && string.IsNullOrWhiteSpace(webSearchQuery))
+                isWebSearch = false;
+        }
+
         var resolvedProjectId = projectId is not null && projects.Any(p => p.Id == projectId) ? projectId : null;
         var resolvedTagIds = tagIds.Where(t => tags.Any(x => x.Id == t)).ToList();
         var resolvedJoplinTagIds = joplinTagIds.Where(t => joplinTags.Any(x => x.Id == t)).ToList();
 
-        _log.Info($"AI classify: project={resolvedProjectId ?? "(none)"}, tags=[{string.Join(',', resolvedTagIds)}], " +
-                  $"isNote={isNote}, isShopping={isShopping}, shoppingItems=[{string.Join(',', shoppingItems)}], " +
-                  $"joplinTags=[{string.Join(',', resolvedJoplinTagIds)}], isCalendarEvent={isCalendarEvent}" +
-                  (isCalendarEvent ? $", eventStart={eventStart:O}" : "") +
-                  $", isMessage={isMessage}" + (isMessage ? $", messageRecipient={messageRecipient}, messagePlatform={messagePlatform ?? "(any)"}" : ""));
+        _log.Info($"AI classify: project={resolvedProjectId ?? "(none)"}, taskTitle={taskTitle ?? "(unchanged)"}, " +
+                  $"tags=[{string.Join(',', resolvedTagIds)}], isNote={isNote}, isShopping={isShopping}, " +
+                  $"shoppingItems=[{string.Join(',', shoppingItems)}], joplinTags=[{string.Join(',', resolvedJoplinTagIds)}], " +
+                  $"isCalendarEvent={isCalendarEvent}" + (isCalendarEvent ? $", eventStart={eventStart:O}" : "") +
+                  $", isMessage={isMessage}" + (isMessage ? $", messageRecipient={messageRecipient}, messagePlatform={messagePlatform ?? "(any)"}" : "") +
+                  $", isWebSearch={isWebSearch}" + (isWebSearch ? $", webSearchQuery={webSearchQuery}" : ""));
 
-        return new Classification(resolvedProjectId, resolvedTagIds, isNote, isShopping, shoppingItems, resolvedJoplinTagIds,
-            isCalendarEvent, eventTitle, eventStart, eventEnd, eventAllDay, isMessage, messageRecipient, messageText, messagePlatform);
+        return new Classification(resolvedProjectId, resolvedTagIds, taskTitle, isNote, isShopping, shoppingItems, resolvedJoplinTagIds,
+            isCalendarEvent, eventTitle, eventStart, eventEnd, eventAllDay, isMessage, messageRecipient, messageText, messagePlatform,
+            isWebSearch, webSearchQuery);
     }
 
     private static DateTimeOffset? ReadDateTimeOffset(IReadOnlyDictionary<string, JsonElement> input, string key)
@@ -680,13 +779,17 @@ public sealed class AiTaskClassifier
 
     private static string BuildPrompt(
         string transcription, IReadOnlyList<SpNamedItem> projects, IReadOnlyList<SpNamedItem> tags,
-        IReadOnlyList<SpNamedItem> joplinTags, bool requireTags, DateTimeOffset referenceTime, bool includeMessage)
+        IReadOnlyList<SpNamedItem> joplinTags, bool requireTags, DateTimeOffset referenceTime, bool includeMessage,
+        bool includeWebSearch)
     {
         var sb = new StringBuilder();
         sb.Append("You are filing a voice-note transcription into Super Productivity. ");
         sb.Append("Pick the single best-fitting project from the list below, based on its title. ");
         sb.Append("Only use ids that appear in the lists given. ");
         sb.Append("If no project fits well, return null for projectId — do not force a match. ");
+        sb.Append("Always set taskTitle to a clean, short title with instruction phrasing stripped (see its " +
+                  "description) — this becomes the Super Productivity task's actual title regardless of " +
+                  "whatever else this transcription turns out to be (note, shopping item, event, message).\n");
 
         if (requireTags)
             sb.Append("You must also pick at least one tag for tagIds — the closest fit if nothing is a " +
@@ -717,6 +820,11 @@ public sealed class AiTaskClassifier
                       "(e.g. \"send a message to Abbie say hello\", \"tell Abbie I'll be late\") and set " +
                       "isMessage, messageRecipient, messageText, and messagePlatform accordingly (see their " +
                       "descriptions) — messagePlatform only when a specific app like Telegram or WhatsApp was named.\n");
+
+        if (includeWebSearch)
+            sb.Append("Also decide whether this is a request to search the web / look something up right " +
+                      "now (e.g. \"search the web for\", \"google\", \"what is the latest version of X\") " +
+                      "and set isWebSearch and webSearchQuery accordingly (see their descriptions).\n");
 
         sb.Append('\n');
         sb.Append("Projects:\n");

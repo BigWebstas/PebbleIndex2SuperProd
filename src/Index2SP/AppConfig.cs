@@ -64,6 +64,46 @@ public sealed class AppConfig
 
     public WhisperConfig Whisper { get; set; } = new();
 
+    public WebSearchConfig WebSearch { get; set; } = new();
+
+    /// <summary>
+    /// Optional: when the AI classifier decides a transcription is a web-search request
+    /// ("search the web for...", "google...", "what is the latest version of..."), runs it
+    /// through Claude's built-in web search tool and sends the summary to one fixed Beeper chat.
+    /// Always uses the Claude/Anthropic credential specifically for the search itself — this
+    /// capability isn't available through the other providers — regardless of which one is
+    /// selected for classification. Requires aiClassifier.apiKey and beeper.enabled.
+    /// </summary>
+    public sealed class WebSearchConfig
+    {
+        public bool Enabled { get; set; } = false;
+
+        /// <summary>Name to match against your existing single-person Beeper chats — the same
+        /// matching Beeper messages use. Every web-search result goes to this one chat; nothing
+        /// is sent, and the request just falls back to a normal SP task, if this is blank.</summary>
+        public string BeeperRecipient { get; set; } = "";
+
+        /// <summary>How many searches Claude may run to answer one query. Clamped 1–10.</summary>
+        public int MaxUses { get; set; } = 3;
+    }
+
+    public WebhookReceiptConfig WebhookReceipt { get; set; } = new();
+
+    /// <summary>
+    /// Optional: send a short Beeper message for every webhook Index2SP receives, naming what
+    /// the AI decided it was ("Webhook Received, Note Created") — a quick receipt independent of
+    /// whether the underlying Super Productivity task or destination actually succeeds. Requires
+    /// beeper.enabled.
+    /// </summary>
+    public sealed class WebhookReceiptConfig
+    {
+        public bool Enabled { get; set; } = false;
+
+        /// <summary>Name to match against your existing single-person Beeper chats — the same
+        /// matching Beeper messages use. Nothing is sent if this is blank.</summary>
+        public string BeeperRecipient { get; set; } = "";
+    }
+
     /// <summary>
     /// Optional: when Pebble sends a webhook with an audio file but no transcription text (the
     /// case that's normally rejected with a 422), transcribe the audio locally instead of
@@ -369,6 +409,9 @@ public sealed class AppConfig
         Whisper.TimeoutSeconds = Math.Clamp(Whisper.TimeoutSeconds, 5, 120);
         if (string.IsNullOrWhiteSpace(Whisper.BaseUrl)) Whisper.BaseUrl = "http://127.0.0.1:8000";
         Whisper.BaseUrl = Whisper.BaseUrl.TrimEnd('/');
+        WebSearch ??= new WebSearchConfig();
+        WebSearch.MaxUses = Math.Clamp(WebSearch.MaxUses, 1, 10);
+        WebhookReceipt ??= new WebhookReceiptConfig();
         SuperProductivity ??= new SuperProductivityConfig();
         if (string.IsNullOrWhiteSpace(SuperProductivity.BaseUrl))
             SuperProductivity.BaseUrl = "http://127.0.0.1:3876";

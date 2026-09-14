@@ -62,5 +62,14 @@
     "baseUrl": "http://127.0.0.1:8000",
     "model": "",
     "timeoutSeconds": 30
+  },
+  "webSearch": {
+    "enabled": false,
+    "beeperRecipient": "",
+    "maxUses": 3
+  },
+  "webhookReceipt": {
+    "enabled": false,
+    "beeperRecipient": ""
   }
 }

@@ -23,10 +23,7 @@ public static class PayloadConverter
                 "or transcription failed) — nothing to create a task from");
         }
 
-        var max = config.TitleMaxLength;
-        var title = transcription.Length <= max
-            ? transcription
-            : transcription[..(max - 1)].TrimEnd() + "…";
+        var title = CapTitle(transcription, config.TitleMaxLength);
 
         // Collapse internal newlines in the title only; keep them in notes.
         title = CollapseWhitespace(title);
@@ -47,6 +44,12 @@ public static class PayloadConverter
 
         return task;
     }
+
+    /// <summary>Caps a title to Super Productivity's length limit (the API rejects titles longer
+    /// than <paramref name="max"/> chars) — shared by the base transcription title, AI-cleaned
+    /// titles, and per-item shopping-list titles so they all truncate the same way.</summary>
+    public static string CapTitle(string title, int max) =>
+        title.Length <= max ? title : title[..(max - 1)].TrimEnd() + "…";
 
     private static string BuildNotes(string transcription, PebblePayload payload)
     {
