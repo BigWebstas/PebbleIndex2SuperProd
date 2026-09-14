@@ -32,7 +32,8 @@ Grab a [release](https://github.com/BigWebstas/PebbleIndex2SuperProd/releases/la
 ## Set up
 
 1. Enable **Settings → Misc → Local REST API** in Super Productivity; copy its token.
-2. Tunnel the listener: `cloudflared tunnel --url http://127.0.0.1:8787`
+2. Tunnel the listener: `cloudflared tunnel --url http://127.0.0.1:8787` (already run nginx,
+   Caddy, or IIS on a public box instead? see [`reverse-proxy/`](reverse-proxy/)).
 3. In Pebble's webhook settings, set the URL to `https://<tunnel-host>/pebble`.
 4. Send Pebble's test event, then record a real note.
 

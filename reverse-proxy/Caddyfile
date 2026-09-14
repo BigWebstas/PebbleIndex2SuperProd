@@ -1,0 +1,20 @@
+# Reverse proxy for Index2SP's Pebble webhook listener (Caddy).
+#
+# Use this instead of a tunnel (cloudflared/ngrok) when you already have a
+# public-facing box running Caddy. Replace pebble.example.com with your own
+# domain — Caddy provisions and renews its TLS certificate automatically.
+#
+# Assumes Index2SP is running on this same machine with its defaults
+# (listenAddress 127.0.0.1, port 8787) — adjust the reverse_proxy target if
+# you changed either in config.json.
+
+pebble.example.com {
+    # Pebble's audio uploads can be up to ~30 MB (Index2SP's own Kestrel
+    # limit) — Caddy's default is unlimited, but being explicit documents
+    # the ceiling and catches anything unexpectedly large.
+    request_body {
+        max_size 32MB
+    }
+
+    reverse_proxy 127.0.0.1:8787
+}
