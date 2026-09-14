@@ -87,7 +87,7 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Install fpm and rpmbuild
         run: |
-          gem install --no-document fpm
+          sudo gem install --no-document fpm
           sudo apt-get update -y
           sudo apt-get install -y rpm
       - name: Build AppImage, .deb, .rpm, PKGBUILD
