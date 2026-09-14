@@ -1,4 +1,10 @@
-# Pebble Index 01 to Super Productivity and Joplin
+# Pebble Index 01 to Super Productivity, Joplin, Google Calendar, and Beeper
+
+Super productivity for Tasks and Shopping lists {Local API)
+Joplin for items classified as Notes (Local API)
+Google Calendar for items classified as meetings/Gatherings/Conferences {Googles Calednar API)
+Beeper for items classified as a Message to a User/Person (Local API)
+
 
 [![Build](https://github.com/BigWebstas/Index2SP/actions/workflows/build.yml/badge.svg)](https://github.com/BigWebstas/Index2SP/actions/workflows/build.yml)
 
