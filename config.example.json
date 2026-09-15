@@ -67,7 +67,8 @@
   "webSearch": {
     "enabled": false,
     "chatId": "",
-    "maxUses": 3
+    "maxUses": 3,
+    "sendDelaySeconds": 5
   },
   "webhookReceipt": {
     "enabled": false,

@@ -518,7 +518,8 @@ public sealed class WebhookServer : IAsyncDisposable
 
         // The webhook receipt goes out right after this returns — a short gap keeps the two
         // Telegram messages from landing in the same instant/notification burst.
-        await Task.Delay(TimeSpan.FromSeconds(5), CancellationToken.None);
+        if (_config.WebSearch.SendDelaySeconds > 0)
+            await Task.Delay(TimeSpan.FromSeconds(_config.WebSearch.SendDelaySeconds), CancellationToken.None);
 
         return await SendTelegramMessageAsync(_config.WebSearch.ChatId, $"🔍 {query}\n\n{summary}");
     }

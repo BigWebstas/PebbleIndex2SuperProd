@@ -89,6 +89,11 @@ public sealed class AppConfig
 
         /// <summary>How many searches Claude may run to answer one query. Clamped 1–10.</summary>
         public int MaxUses { get; set; } = 3;
+
+        /// <summary>Seconds to wait after the search summary is ready before sending it — keeps
+        /// it from landing in the same instant as the webhook-receipt message that follows right
+        /// after. Clamped 0–60; 0 sends immediately.</summary>
+        public int SendDelaySeconds { get; set; } = 5;
     }
 
     public WebhookReceiptConfig WebhookReceipt { get; set; } = new();
@@ -436,6 +441,7 @@ public sealed class AppConfig
         Whisper.BaseUrl = Whisper.BaseUrl.TrimEnd('/');
         WebSearch ??= new WebSearchConfig();
         WebSearch.MaxUses = Math.Clamp(WebSearch.MaxUses, 1, 10);
+        WebSearch.SendDelaySeconds = Math.Clamp(WebSearch.SendDelaySeconds, 0, 60);
         WebhookReceipt ??= new WebhookReceiptConfig();
         Telegram ??= new TelegramConfig();
         Telegram.TimeoutSeconds = Math.Clamp(Telegram.TimeoutSeconds, 2, 30);

@@ -185,6 +185,19 @@ public class AppConfigTests : IDisposable
     }
 
     [Theory]
+    [InlineData(0, 0)]    // 0 sends immediately, left alone
+    [InlineData(-5, 0)]
+    [InlineData(999, 60)]
+    public void Normalize_ClampsWebSearchSendDelaySeconds(int input, int expected)
+    {
+        File.WriteAllText(ConfigPath, $$"""{ "webSearch": { "sendDelaySeconds": {{input}} } }""");
+
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.Equal(expected, config.WebSearch.SendDelaySeconds);
+    }
+
+    [Theory]
     [InlineData(1, 2)]
     [InlineData(999, 30)]
     public void Normalize_ClampsTelegramTimeoutSeconds(int input, int expected)
