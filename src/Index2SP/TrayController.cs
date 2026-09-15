@@ -944,6 +944,7 @@ public sealed class TrayController : IDisposable
 
         m.Add(Action(string.IsNullOrWhiteSpace(cfg.ChatId) ? "Set Telegram chat ID…" : "Change Telegram chat ID…",
             () => _ = SetWebSearchChatIdAsync()));
+        m.Add(Action("Send test message", () => _ = SendTelegramTestMessageAsync("Web search", cfg.ChatId)));
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.ChatId) ? "No chat ID set" : $"Chat ID: {cfg.ChatId}"));
         m.Add(Disabled("Searches via Claude's web search tool — needs a Claude API key and Telegram enabled"));
         return m;
@@ -964,6 +965,7 @@ public sealed class TrayController : IDisposable
 
         m.Add(Action(string.IsNullOrWhiteSpace(cfg.ChatId) ? "Set Telegram chat ID…" : "Change Telegram chat ID…",
             () => _ = SetWebhookReceiptChatIdAsync()));
+        m.Add(Action("Send test message", () => _ = SendTelegramTestMessageAsync("Webhook receipt", cfg.ChatId)));
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.ChatId) ? "No chat ID set" : $"Chat ID: {cfg.ChatId}"));
         m.Add(Disabled("Sends \"Webhook Received, ...\" for every capture — needs Telegram enabled"));
         return m;
@@ -2196,6 +2198,34 @@ public sealed class TrayController : IDisposable
         SaveConfig("Webhook receipt chat ID updated");
     }
 
+    /// <summary>Sends one real message through the Telegram bot to <paramref name="chatId"/> —
+    /// unlike "Test connection" on the bot itself (a bare getMe probe), this confirms the actual
+    /// per-feature destination chat is reachable.</summary>
+    private async Task SendTelegramTestMessageAsync(string featureName, string chatId)
+    {
+        var cfg = _config.Telegram;
+        if (!cfg.Enabled || string.IsNullOrWhiteSpace(cfg.BotToken))
+        {
+            Notify(featureName, "Telegram isn't enabled, or has no bot token set.", NotifyKind.Error, force: true);
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(chatId))
+        {
+            Notify(featureName, "No chat ID set.", NotifyKind.Error, force: true);
+            return;
+        }
+
+        try
+        {
+            using var telegram = new TelegramClient(cfg);
+            await telegram.SendMessageAsync(chatId, $"Index2SP test message — {featureName}", CancellationToken.None);
+            Notify(featureName, $"Test message sent to {chatId}.", NotifyKind.Info, force: true);
+        }
+        catch (Exception ex) when (ex is TelegramApiException or HttpRequestException or TaskCanceledException)
+        {
+            Notify(featureName, $"Couldn't send: {ex.Message}", NotifyKind.Error, force: true);
+        }
+    }
 
     private void SaveConfig(string what)
     {
