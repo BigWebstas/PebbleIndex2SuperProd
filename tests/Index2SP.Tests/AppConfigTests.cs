@@ -89,6 +89,18 @@ public class AppConfigTests : IDisposable
     }
 
     [Theory]
+    [InlineData(0, 1)]
+    [InlineData(999, 20)]
+    public void Normalize_ClampsOutageFailureThreshold(int input, int expected)
+    {
+        File.WriteAllText(ConfigPath, $$"""{ "outageFailureThreshold": {{input}} }""");
+
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.Equal(expected, config.OutageFailureThreshold);
+    }
+
+    [Theory]
     [InlineData(1, 2)]
     [InlineData(999, 30)]
     public void Normalize_ClampsAiClassifierTimeoutSeconds(int input, int expected)
@@ -158,5 +170,50 @@ public class AppConfigTests : IDisposable
         var config = AppConfig.LoadOrCreate(ConfigPath);
 
         Assert.Equal(expected, config.AiClassifier.FallbackProvider);
+    }
+
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(999, 10)]
+    public void Normalize_ClampsWebSearchMaxUses(int input, int expected)
+    {
+        File.WriteAllText(ConfigPath, $$"""{ "webSearch": { "maxUses": {{input}} } }""");
+
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.Equal(expected, config.WebSearch.MaxUses);
+    }
+
+    [Theory]
+    [InlineData(1, 2)]
+    [InlineData(999, 30)]
+    public void Normalize_ClampsTelegramTimeoutSeconds(int input, int expected)
+    {
+        File.WriteAllText(ConfigPath, $$"""{ "telegram": { "timeoutSeconds": {{input}} } }""");
+
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.Equal(expected, config.Telegram.TimeoutSeconds);
+    }
+
+    [Fact]
+    public void SaveThenLoad_KeepsWebSearchAndWebhookReceiptChatIdsIndependent()
+    {
+        var original = AppConfig.LoadOrCreate(ConfigPath);
+        original.Telegram.Enabled = true;
+        original.Telegram.BotToken = "123:ABC";
+        original.WebSearch.Enabled = true;
+        original.WebSearch.ChatId = "-1001";
+        original.WebhookReceipt.Enabled = true;
+        original.WebhookReceipt.ChatId = "-1002";
+        original.Save(ConfigPath);
+
+        var reloaded = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.True(reloaded.Telegram.Enabled);
+        Assert.Equal("123:ABC", reloaded.Telegram.BotToken);
+        Assert.Equal("-1001", reloaded.WebSearch.ChatId);
+        Assert.Equal("-1002", reloaded.WebhookReceipt.ChatId);
+        Assert.NotEqual(reloaded.WebSearch.ChatId, reloaded.WebhookReceipt.ChatId);
     }
 }

@@ -35,6 +35,11 @@ public sealed class AppConfig
     /// the tray status fresh. 0 disables the timer; minimum 15.</summary>
     public int HealthCheckSeconds { get; set; } = 60;
 
+    /// <summary>Consecutive failed probes (across any of the health checks — Super Productivity,
+    /// Joplin, Google Calendar, Beeper, Telegram, Whisper, AI classifier) needed before an outage
+    /// notification and outage task fire. A single blip stays quiet. Clamped to 1–20.</summary>
+    public int OutageFailureThreshold { get; set; } = 3;
+
     /// <summary>A webhook whose transcription equals this phrase (trimmed, case-insensitive) is
     /// treated as a connectivity test — it shows a notification instead of creating a task.
     /// This is what Pebble's "send test event" produces. Blank disables the check.</summary>
@@ -389,6 +394,7 @@ public sealed class AppConfig
         if (TitleMaxLength is < 10 or > 300) TitleMaxLength = 300;
         if (HealthCheckSeconds != 0)
             HealthCheckSeconds = Math.Clamp(HealthCheckSeconds, 15, 3600);
+        OutageFailureThreshold = Math.Clamp(OutageFailureThreshold, 1, 20);
         OutboxRetrySeconds = Math.Clamp(OutboxRetrySeconds, 10, 3600);
         if (OutboxMaxAttempts < 0) OutboxMaxAttempts = 0;
         AiClassifier ??= new AiClassifierConfig();

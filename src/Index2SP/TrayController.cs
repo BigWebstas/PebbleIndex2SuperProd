@@ -36,24 +36,31 @@ public sealed class TrayController : IDisposable
     private bool _outboxFlushInFlight;
 
     private SpHealth _spHealth = SpHealth.Unknown;
+    private int _spFailureStreak;
     private bool _healthCheckInFlight;
 
     private SpHealth _joplinHealth = SpHealth.Unknown;
+    private int _joplinFailureStreak;
     private bool _joplinHealthCheckInFlight;
 
     private SpHealth _googleHealth = SpHealth.Unknown;
+    private int _googleFailureStreak;
     private bool _googleHealthCheckInFlight;
 
     private SpHealth _beeperHealth = SpHealth.Unknown;
+    private int _beeperFailureStreak;
     private bool _beeperHealthCheckInFlight;
 
     private SpHealth _telegramHealth = SpHealth.Unknown;
+    private int _telegramFailureStreak;
     private bool _telegramHealthCheckInFlight;
 
     private SpHealth _aiHealth = SpHealth.Unknown;
+    private int _aiFailureStreak;
     private bool _aiHealthCheckInFlight;
 
     private SpHealth _whisperHealth = SpHealth.Unknown;
+    private int _whisperFailureStreak;
     private bool _whisperHealthCheckInFlight;
 
     private UpdateChecker.UpdateInfo? _updateAvailable;
@@ -1044,6 +1051,13 @@ public sealed class TrayController : IDisposable
             _telegramHealth = SpHealth.Unknown;
             _aiHealth = SpHealth.Unknown;
             _whisperHealth = SpHealth.Unknown;
+            _spFailureStreak = 0;
+            _joplinFailureStreak = 0;
+            _googleFailureStreak = 0;
+            _beeperFailureStreak = 0;
+            _telegramFailureStreak = 0;
+            _aiFailureStreak = 0;
+            _whisperFailureStreak = 0;
             _captureTag = new CaptureTagResolver(_config.SuperProductivity, _log);
             _classifier = new AiTaskClassifier(_config.AiClassifier, _log);
             ConfigureHealthTimer();
@@ -1087,6 +1101,7 @@ public sealed class TrayController : IDisposable
 
             var prev = _spHealth;
             _spHealth = state;
+            var outage = CrossedOutageThreshold(state, ref _spFailureStreak);
 
             if (state != prev)
             {
@@ -1097,13 +1112,13 @@ public sealed class TrayController : IDisposable
                 else
                     _log.Warn($"Super Productivity unreachable — {message}");
 
-                if (!manual && state == SpHealth.Unreachable && prev != SpHealth.Unreachable)
-                {
-                    Notify("Super Productivity unreachable", message, NotifyKind.Warning);
-                    _ = CreateOutageTaskAsync("Super Productivity", message);
-                }
-
                 RefreshTray();
+            }
+
+            if (!manual && outage)
+            {
+                Notify("Super Productivity unreachable", message, NotifyKind.Warning);
+                _ = CreateOutageTaskAsync("Super Productivity", message);
             }
 
             if (manual)
@@ -1145,6 +1160,7 @@ public sealed class TrayController : IDisposable
 
             var prev = _joplinHealth;
             _joplinHealth = state;
+            var outage = CrossedOutageThreshold(state, ref _joplinFailureStreak);
 
             if (state != prev)
             {
@@ -1155,13 +1171,13 @@ public sealed class TrayController : IDisposable
                 else
                     _log.Warn($"Joplin unreachable — {message}");
 
-                if (!manual && state == SpHealth.Unreachable && prev != SpHealth.Unreachable)
-                {
-                    Notify("Joplin unreachable", message, NotifyKind.Warning);
-                    _ = CreateOutageTaskAsync("Joplin", message);
-                }
-
                 RefreshTray();
+            }
+
+            if (!manual && outage)
+            {
+                Notify("Joplin unreachable", message, NotifyKind.Warning);
+                _ = CreateOutageTaskAsync("Joplin", message);
             }
 
             if (manual)
@@ -1202,6 +1218,7 @@ public sealed class TrayController : IDisposable
 
             var prev = _googleHealth;
             _googleHealth = state;
+            var outage = CrossedOutageThreshold(state, ref _googleFailureStreak);
 
             if (state != prev)
             {
@@ -1212,13 +1229,13 @@ public sealed class TrayController : IDisposable
                 else
                     _log.Warn($"Google Calendar unreachable — {message}");
 
-                if (!manual && state == SpHealth.Unreachable && prev != SpHealth.Unreachable)
-                {
-                    Notify("Google Calendar unreachable", message, NotifyKind.Warning);
-                    _ = CreateOutageTaskAsync("Google Calendar", message);
-                }
-
                 RefreshTray();
+            }
+
+            if (!manual && outage)
+            {
+                Notify("Google Calendar unreachable", message, NotifyKind.Warning);
+                _ = CreateOutageTaskAsync("Google Calendar", message);
             }
 
             if (manual)
@@ -1259,6 +1276,7 @@ public sealed class TrayController : IDisposable
 
             var prev = _beeperHealth;
             _beeperHealth = state;
+            var outage = CrossedOutageThreshold(state, ref _beeperFailureStreak);
 
             if (state != prev)
             {
@@ -1269,13 +1287,13 @@ public sealed class TrayController : IDisposable
                 else
                     _log.Warn($"Beeper unreachable — {message}");
 
-                if (!manual && state == SpHealth.Unreachable && prev != SpHealth.Unreachable)
-                {
-                    Notify("Beeper unreachable", message, NotifyKind.Warning);
-                    _ = CreateOutageTaskAsync("Beeper", message);
-                }
-
                 RefreshTray();
+            }
+
+            if (!manual && outage)
+            {
+                Notify("Beeper unreachable", message, NotifyKind.Warning);
+                _ = CreateOutageTaskAsync("Beeper", message);
             }
 
             if (manual)
@@ -1316,6 +1334,7 @@ public sealed class TrayController : IDisposable
 
             var prev = _telegramHealth;
             _telegramHealth = state;
+            var outage = CrossedOutageThreshold(state, ref _telegramFailureStreak);
 
             if (state != prev)
             {
@@ -1326,13 +1345,13 @@ public sealed class TrayController : IDisposable
                 else
                     _log.Warn($"Telegram unreachable — {message}");
 
-                if (!manual && state == SpHealth.Unreachable && prev != SpHealth.Unreachable)
-                {
-                    Notify("Telegram unreachable", message, NotifyKind.Warning);
-                    _ = CreateOutageTaskAsync("Telegram", message);
-                }
-
                 RefreshTray();
+            }
+
+            if (!manual && outage)
+            {
+                Notify("Telegram unreachable", message, NotifyKind.Warning);
+                _ = CreateOutageTaskAsync("Telegram", message);
             }
 
             if (manual)
@@ -1373,6 +1392,7 @@ public sealed class TrayController : IDisposable
 
             var prev = _whisperHealth;
             _whisperHealth = state;
+            var outage = CrossedOutageThreshold(state, ref _whisperFailureStreak);
 
             if (state != prev)
             {
@@ -1383,13 +1403,13 @@ public sealed class TrayController : IDisposable
                 else
                     _log.Warn($"Whisper unreachable — {message}");
 
-                if (!manual && state == SpHealth.Unreachable && prev != SpHealth.Unreachable)
-                {
-                    Notify("Whisper unreachable", message, NotifyKind.Warning);
-                    _ = CreateOutageTaskAsync("Whisper", message);
-                }
-
                 RefreshTray();
+            }
+
+            if (!manual && outage)
+            {
+                Notify("Whisper unreachable", message, NotifyKind.Warning);
+                _ = CreateOutageTaskAsync("Whisper", message);
             }
 
             if (manual)
@@ -1569,6 +1589,7 @@ public sealed class TrayController : IDisposable
 
             var prev = _aiHealth;
             _aiHealth = state;
+            var outage = CrossedOutageThreshold(state, ref _aiFailureStreak);
 
             if (state != prev)
             {
@@ -1579,13 +1600,13 @@ public sealed class TrayController : IDisposable
                 else
                     _log.Warn($"AI classifier unreachable — {message}");
 
-                if (!manual && state == SpHealth.Unreachable && prev != SpHealth.Unreachable)
-                {
-                    Notify("AI classifier unreachable", message, NotifyKind.Warning);
-                    _ = CreateOutageTaskAsync("AI classifier", message);
-                }
-
                 RefreshTray();
+            }
+
+            if (!manual && outage)
+            {
+                Notify("AI classifier unreachable", message, NotifyKind.Warning);
+                _ = CreateOutageTaskAsync("AI classifier", message);
             }
 
             if (manual)
@@ -1666,6 +1687,16 @@ public sealed class TrayController : IDisposable
     /// If Super Productivity itself is the one that's unreachable, this attempt simply fails and
     /// logs — same as any other outage — there's no special-casing needed.
     /// </summary>
+    /// <summary>Updates <paramref name="failureStreak"/> for this probe result and reports
+    /// whether it just reached <see cref="AppConfig.OutageFailureThreshold"/> consecutive
+    /// failures — the single moment an outage notification/task should fire for this streak, not
+    /// every check afterward while it stays down.</summary>
+    private bool CrossedOutageThreshold(SpHealth state, ref int failureStreak)
+    {
+        failureStreak = state == SpHealth.Unreachable ? failureStreak + 1 : 0;
+        return failureStreak == _config.OutageFailureThreshold;
+    }
+
     private async Task CreateOutageTaskAsync(string name, string message)
     {
         try
