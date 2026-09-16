@@ -16,8 +16,10 @@
       <StackPanel Grid.Column="2" Spacing="3">
         <TextBlock x:Name="TitleText" FontWeight="SemiBold" Foreground="#F2F2F2" />
         <TextBlock x:Name="BodyText" TextWrapping="Wrap" MaxLines="10" Foreground="#C8C8C8" FontSize="12" />
-        <Button x:Name="ActionButton" IsVisible="False" HorizontalAlignment="Right" Margin="0,6,0,0"
-                Padding="10,4" Background="#1F6FEB" BorderThickness="0" Foreground="White" />
+        <Border x:Name="ActionButton" IsVisible="False" HorizontalAlignment="Right" Margin="0,6,0,0"
+                Padding="10,4" CornerRadius="4" Background="#1F6FEB" Cursor="Hand">
+          <TextBlock x:Name="ActionButtonText" Foreground="White" FontSize="12" FontWeight="SemiBold" />
+        </Border>
       </StackPanel>
     </Grid>
   </Border>

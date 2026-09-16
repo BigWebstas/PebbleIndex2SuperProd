@@ -255,6 +255,8 @@ public sealed class TrayController : IDisposable
         checkUpdates.Click += (_, _) => ToggleCheckForUpdates();
         menu.Add(checkUpdates);
         menu.Add(Action("Check for updates", () => _ = RunUpdateCheckAsync(manual: true)));
+        if (_updateAvailable is { AssetUrl: not null } dl && _downloadedUpdatePath is null && !_updateDownloadInFlight)
+            menu.Add(Action($"⬇ Download update (v{dl.Version})", () => _ = DownloadUpdateAsync(dl)));
         menu.Add(new NativeMenuItemSeparator());
 
         menu.Add(Disabled($"Index2SP v{AppInfo.Version}"));

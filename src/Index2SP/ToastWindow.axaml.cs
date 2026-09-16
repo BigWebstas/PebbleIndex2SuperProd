@@ -31,16 +31,33 @@ public partial class ToastWindow : Window
 
         if (actionLabel is not null && action is not null)
         {
-            ActionButton.Content = actionLabel;
+            // Plain Border, not a Button — FluentTheme's Button pointerover style targets a
+            // template part directly and was overriding our explicit colors, making the button
+            // seem to vanish on hover. A Border has no theme states to fight with.
+            ActionButtonText.Text = actionLabel;
             ActionButton.IsVisible = true;
-            // Without this, the Window's own PointerPressed (dismiss-on-click, below) fires
-            // first on bubble and closes the toast before the Button's Click ever runs.
-            ActionButton.PointerPressed += (_, e) => e.Handled = true;
-            ActionButton.Click += (_, _) => { action(); SafeClose(); };
+            var normal = new SolidColorBrush(Color.FromRgb(0x1F, 0x6F, 0xEB));
+            var hover = new SolidColorBrush(Color.FromRgb(0x3D, 0x8B, 0xFF));
+            ActionButton.Background = normal;
+            ActionButton.PointerEntered += (_, _) => ActionButton.Background = hover;
+            ActionButton.PointerExited += (_, _) => ActionButton.Background = normal;
+            // Handled here (not via a Click event) and marked Handled so the window's own
+            // dismiss-on-click below never sees this press.
+            ActionButton.PointerPressed += (_, e) =>
+            {
+                e.Handled = true;
+                action();
+                SafeClose();
+            };
         }
 
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(6) };
         _timer.Tick += (_, _) => SafeClose();
+
+        // Pausing on hover matters most for an actionable toast — 6s isn't always enough time to
+        // read it, move the mouse, and click before it would otherwise auto-dismiss underneath you.
+        PointerEntered += (_, _) => _timer.Stop();
+        PointerExited += (_, _) => _timer.Start();
 
         PointerPressed += (_, _) => SafeClose();
         Opened += OnOpened;
