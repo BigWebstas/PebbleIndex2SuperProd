@@ -468,6 +468,18 @@ public sealed class TrayController : IDisposable
             ? "On: must pick an SP tag, and a Joplin tag for notes"
             : "Off: every task/note just gets its default tags"));
 
+        var alwaysAddDefaultTag = new NativeMenuItem("Always add default tag as well")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = cfg.AlwaysAddDefaultTag,
+            IsEnabled = cfg.RequireTags,
+        };
+        alwaysAddDefaultTag.Click += (_, _) => ToggleAlwaysAddDefaultTag();
+        m.Add(alwaysAddDefaultTag);
+        m.Add(Disabled(cfg.AlwaysAddDefaultTag && cfg.RequireTags
+            ? "On: default tags are added alongside the AI's picks"
+            : "Off: the AI's tag picks replace the default tags"));
+
         var exclusiveRouting = new NativeMenuItem("Route to one destination only")
         {
             ToggleType = NativeMenuItemToggleType.CheckBox,
@@ -1987,6 +1999,13 @@ public sealed class TrayController : IDisposable
         var cfg = _config.AiClassifier;
         cfg.RequireTags = !cfg.RequireTags;
         SaveConfig($"AI classifier require-at-least-one-tag {(cfg.RequireTags ? "enabled" : "disabled")}");
+    }
+
+    private void ToggleAlwaysAddDefaultTag()
+    {
+        var cfg = _config.AiClassifier;
+        cfg.AlwaysAddDefaultTag = !cfg.AlwaysAddDefaultTag;
+        SaveConfig($"AI classifier always-add-default-tag {(cfg.AlwaysAddDefaultTag ? "enabled" : "disabled")}");
     }
 
     private void ToggleExclusiveRouting()

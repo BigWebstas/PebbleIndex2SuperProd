@@ -362,7 +362,13 @@ public sealed class WebhookServer : IAsyncDisposable
             if (result is null) return new AiRoutingResult(null, false);
 
             if (result.ProjectId is not null) taskReq.ProjectId = result.ProjectId;
-            if (result.TagIds.Count > 0) taskReq.TagIds = result.TagIds;
+            if (result.TagIds.Count > 0)
+            {
+                taskReq.TagIds = _config.AiClassifier.RequireTags && _config.AiClassifier.AlwaysAddDefaultTag &&
+                    _config.SuperProductivity.TagIds is { Count: > 0 } defaultTagIds
+                        ? result.TagIds.Concat(defaultTagIds).Distinct().ToList()
+                        : result.TagIds;
+            }
             // Strips command phrasing ("add a task to", "remind me to") from the task's title.
             // A multi-item shopping capture overwrites this again per item below — harmless.
             if (result.TaskTitle is not null)

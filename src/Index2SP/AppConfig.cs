@@ -301,6 +301,11 @@ public sealed class AppConfig
         /// task/note just gets the configured default tags.</summary>
         public bool RequireTags { get; set; } = false;
 
+        /// <summary>When true (and only takes effect while <see cref="RequireTags"/> is also on),
+        /// the configured superProductivity.tagIds default tags are added alongside whatever tags
+        /// the AI picked, instead of the AI's picks replacing them. Off by default.</summary>
+        public bool AlwaysAddDefaultTag { get; set; } = false;
+
         /// <summary>When true, a transcription routed to Joplin, Google Calendar, or Beeper (as
         /// a note, calendar event, or message) skips the Super Productivity task as long as that
         /// destination actually succeeds — avoiding a duplicate. If the destination attempt fails
