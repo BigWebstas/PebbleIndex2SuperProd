@@ -83,7 +83,14 @@ public partial class LogWindow : Window
         foreach (var entry in entries)
         {
             if (inlines.Count > 0) inlines.Add(new LineBreak());
-            inlines.Add(new Run(entry.ToString()) { Foreground = BrushForLevel(entry.Level) });
+
+            var run = new Run(entry.ToString());
+            // Only set Foreground for error/warn — an explicit null local value can paint with no
+            // brush at all instead of falling back to the inherited theme color, so Info leaves
+            // the property untouched rather than assigning null to it.
+            if (BrushForLevel(entry.Level) is { } brush) run.Foreground = brush;
+            inlines.Add(run);
+
             _allText.Append(entry).Append(Environment.NewLine);
         }
     }
