@@ -1510,6 +1510,13 @@ public sealed class TrayController : IDisposable
         _updateDownloadInFlight = true;
         _updateDownloadPercent = null;
         RebuildMenu();
+
+        // notify-send can't have its body text updated in place without a replace-id dance this
+        // app doesn't do elsewhere, so the live progress notification always uses our own toast,
+        // bypassing Notifier — and only when the user hasn't turned notifications off.
+        var progressToast = _config.Notifications
+            ? ToastWindow.ShowPersistent("Downloading update", $"v{update.Version} — 0%", NotifyKind.Info)
+            : null;
         try
         {
             using var checker = new UpdateChecker();
@@ -1518,19 +1525,25 @@ public sealed class TrayController : IDisposable
             {
                 _updateDownloadPercent = pct;
                 RebuildMenu();
+                progressToast?.UpdateBody($"v{update.Version} — {pct}%");
             });
             var path = await checker.DownloadAssetAsync(update, progress);
             _downloadedUpdatePath = path;
             _log.Info($"Downloaded update to {path}");
+            progressToast?.Dismiss();
+            progressToast = null;
             Notify("Update ready", $"v{update.Version} downloaded — open the tray menu to install.", NotifyKind.Info, force: true);
         }
         catch (Exception ex) when (ex is UpdateCheckException or HttpRequestException or TaskCanceledException or IOException)
         {
             _log.Error("Update download failed", ex);
+            progressToast?.Dismiss();
+            progressToast = null;
             Notify("Download failed", ex.Message, NotifyKind.Error, force: true);
         }
         finally
         {
+            progressToast?.Dismiss();
             _updateDownloadInFlight = false;
             _updateDownloadPercent = null;
             RebuildMenu();

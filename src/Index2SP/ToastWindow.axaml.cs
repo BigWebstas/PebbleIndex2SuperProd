@@ -14,10 +14,14 @@ public partial class ToastWindow : Window
     private static ToastWindow? _current;
     private readonly DispatcherTimer _timer;
 
+    private readonly bool _autoDismiss;
+
     public ToastWindow() : this("Index2SP", string.Empty, NotifyKind.Info, null, null) { }
 
-    public ToastWindow(string title, string body, NotifyKind kind, string? actionLabel = null, Action? action = null)
+    public ToastWindow(string title, string body, NotifyKind kind, string? actionLabel = null, Action? action = null,
+        bool autoDismiss = true)
     {
+        _autoDismiss = autoDismiss;
         InitializeComponent();
 
         TitleText.Text = title;
@@ -56,8 +60,11 @@ public partial class ToastWindow : Window
 
         // Pausing on hover matters most for an actionable toast — 6s isn't always enough time to
         // read it, move the mouse, and click before it would otherwise auto-dismiss underneath you.
-        PointerEntered += (_, _) => _timer.Stop();
-        PointerExited += (_, _) => _timer.Start();
+        if (_autoDismiss)
+        {
+            PointerEntered += (_, _) => _timer.Stop();
+            PointerExited += (_, _) => _timer.Start();
+        }
 
         PointerPressed += (_, _) => SafeClose();
         Opened += OnOpened;
@@ -72,9 +79,25 @@ public partial class ToastWindow : Window
         toast.Show();
     }
 
+    /// <summary>Shows a toast that stays open until <see cref="Dismiss"/> is called — no 6s
+    /// timer — so the caller can keep it up to date with <see cref="UpdateBody"/> across a
+    /// long-running operation (e.g. a download's progress).</summary>
+    public static ToastWindow ShowPersistent(string title, string body, NotifyKind kind)
+    {
+        _current?.SafeClose();
+        var toast = new ToastWindow(title, body, kind, autoDismiss: false);
+        _current = toast;
+        toast.Show();
+        return toast;
+    }
+
+    public void UpdateBody(string body) => BodyText.Text = body;
+
+    public void Dismiss() => SafeClose();
+
     private void OnOpened(object? sender, EventArgs e)
     {
-        _timer.Start();
+        if (_autoDismiss) _timer.Start();
         try
         {
             var screen = Screens.Primary ?? (Screens.All.Count > 0 ? Screens.All[0] : null);
