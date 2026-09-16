@@ -15,7 +15,22 @@ public enum SpHealth { Unknown, Ok, Unreachable }
 /// </summary>
 internal static class IconRenderer
 {
+    // Only 4 distinct visuals ever exist (not-listening, or listening × 3 health values) — cache
+    // and reuse instead of re-rendering and re-encoding identical pixels on every tray refresh.
+    // Only ever touched from the Avalonia UI thread (via TrayController), so no locking needed.
+    private static readonly Dictionary<(bool Listening, SpHealth Health), WindowIcon> Cache = new();
+
     public static WindowIcon Tray(bool listening, SpHealth health)
+    {
+        var key = (listening, Health: listening ? health : SpHealth.Unknown);
+        if (Cache.TryGetValue(key, out var cached)) return cached;
+
+        var icon = Render(listening, health);
+        Cache[key] = icon;
+        return icon;
+    }
+
+    private static WindowIcon Render(bool listening, SpHealth health)
     {
         var ring = listening
             ? Color.FromRgb(0x2E, 0xA0, 0x43)   // green — listener running

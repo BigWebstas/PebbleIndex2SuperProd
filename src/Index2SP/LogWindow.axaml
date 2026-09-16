@@ -5,15 +5,16 @@
         Title="Index2SP — Log"
         WindowStartupLocation="CenterScreen">
   <Grid RowDefinitions="*,Auto" Margin="0">
-    <TextBox x:Name="Box"
-             Grid.Row="0"
-             IsReadOnly="True"
-             AcceptsReturn="True"
-             TextWrapping="NoWrap"
-             FontFamily="Cascadia Mono,Consolas,DejaVu Sans Mono,monospace"
-             FontSize="12"
-             VerticalContentAlignment="Top"
-             VerticalAlignment="Stretch" />
+    <ScrollViewer x:Name="Scroll"
+                  Grid.Row="0"
+                  HorizontalScrollBarVisibility="Auto"
+                  VerticalScrollBarVisibility="Auto">
+      <SelectableTextBlock x:Name="Box"
+                            TextWrapping="NoWrap"
+                            FontFamily="Cascadia Mono,Consolas,DejaVu Sans Mono,monospace"
+                            FontSize="12"
+                            Margin="6" />
+    </ScrollViewer>
     <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="8" Spacing="8">
       <Button x:Name="CopyBtn" Content="Copy all" />
       <Button x:Name="ClearBtn" Content="Clear view" />

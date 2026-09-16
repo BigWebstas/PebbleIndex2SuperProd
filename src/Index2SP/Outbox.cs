@@ -92,6 +92,17 @@ public sealed class Outbox
 
             using var sp = new SuperProductivityClient(spConfig);
 
+            // Fetched once for the whole pass, not per item — every queued item's notes carry a
+            // unique "Recorded:" timestamp, so a duplicate can only ever be that item's own prior
+            // attempt, never another item queued in this same pass.
+            IReadOnlyList<SuperProductivityClient.SpTaskSummary> existingTasks;
+            try { existingTasks = await sp.GetRecentTasksAsync(ct); }
+            catch (Exception ex) when (ex is SpApiException or HttpRequestException or TaskCanceledException)
+            {
+                _log.Warn($"Outbox duplicate check failed, continuing with normal delivery: {ex.Message}");
+                existingTasks = Array.Empty<SuperProductivityClient.SpTaskSummary>();
+            }
+
             foreach (var file in files)
             {
                 ct.ThrowIfCancellationRequested();
@@ -122,7 +133,7 @@ public sealed class Outbox
                     // Productivity already — only its response was lost (dropped connection,
                     // timeout after the server had already processed it). Check for an exact
                     // title+notes match before retrying, so that case doesn't create a duplicate.
-                    var duplicateId = await FindDuplicateAsync(sp, item.Task, CancellationToken.None);
+                    var duplicateId = FindDuplicate(existingTasks, item.Task);
                     if (duplicateId is not null)
                     {
                         TryDelete(file);
@@ -177,23 +188,11 @@ public sealed class Outbox
         }
     }
 
-    /// <summary>Exact title+notes match against Super Productivity's current tasks. Notes always
-    /// carries a "Recorded: &lt;timestamp&gt;" line from the original capture, so two genuinely
-    /// separate captures of the same words never collide here. Fails open — a failed check just
-    /// means the normal create attempt proceeds, never blocking delivery on this being unreachable.</summary>
-    private async Task<string?> FindDuplicateAsync(SuperProductivityClient sp, SpTaskRequest task, CancellationToken ct)
-    {
-        try
-        {
-            var existing = await sp.GetRecentTasksAsync(ct);
-            return existing.FirstOrDefault(t => t.Title == task.Title && t.Notes == task.Notes)?.Id;
-        }
-        catch (Exception ex) when (ex is SpApiException or HttpRequestException or TaskCanceledException)
-        {
-            _log.Warn($"Outbox duplicate check failed, continuing with normal delivery: {ex.Message}");
-            return null;
-        }
-    }
+    /// <summary>Exact title+notes match against Super Productivity's current tasks (fetched once
+    /// per flush pass). Notes always carries a "Recorded: &lt;timestamp&gt;" line from the
+    /// original capture, so two genuinely separate captures of the same words never collide here.</summary>
+    private static string? FindDuplicate(IReadOnlyList<SuperProductivityClient.SpTaskSummary> existing, SpTaskRequest task)
+        => existing.FirstOrDefault(t => t.Title == task.Title && t.Notes == task.Notes)?.Id;
 
     private static void RecordAttempt(OutboxItem item, Exception ex)
     {

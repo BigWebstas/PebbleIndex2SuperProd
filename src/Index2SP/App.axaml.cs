@@ -69,6 +69,7 @@ public partial class App : Application
                 _signals.Clear();
                 _tray?.Dispose();
                 log.Info("Index2SP exiting");
+                log.Dispose();
             };
 
             // Clean up on kill / systemctl stop / Ctrl+C — Avalonia's lifetime doesn't do this.

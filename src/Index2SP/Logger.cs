@@ -15,13 +15,19 @@ public sealed record LogEntry(DateTimeOffset Timestamp, LogLevel Level, string M
 /// Thread-safe logger: appends to a daily file under %APPDATA%\Index2SP\logs and keeps the
 /// last N entries in memory for the tray "View log" window.
 /// </summary>
-public sealed class Logger
+public sealed class Logger : IDisposable
 {
     private const int MemoryCapacity = 500;
 
     private readonly string _logDir;
     private readonly ConcurrentQueue<LogEntry> _recent = new();
     private readonly object _fileLock = new();
+
+    // Kept open across writes instead of opening/closing the file on every Info/Warn/Error call;
+    // only reopened when the day rolls over. AutoFlush means each line still reaches the OS right
+    // away, so this doesn't trade away the "logging survives a crash" property of AppendAllText.
+    private StreamWriter? _fileWriter;
+    private string? _fileWriterDate;
 
     public event Action<LogEntry>? EntryAdded;
 
@@ -49,10 +55,17 @@ public sealed class Logger
 
         try
         {
-            var file = Path.Combine(_logDir, $"index2sp-{DateTimeOffset.Now:yyyy-MM-dd}.log");
+            var date = DateTimeOffset.Now.ToString("yyyy-MM-dd");
             lock (_fileLock)
             {
-                File.AppendAllText(file, entry + Environment.NewLine, Encoding.UTF8);
+                if (_fileWriter is null || _fileWriterDate != date)
+                {
+                    _fileWriter?.Dispose();
+                    var file = Path.Combine(_logDir, $"index2sp-{date}.log");
+                    _fileWriter = new StreamWriter(file, append: true, Encoding.UTF8) { AutoFlush = true };
+                    _fileWriterDate = date;
+                }
+                _fileWriter.WriteLine(entry.ToString());
             }
         }
         catch
@@ -61,5 +74,10 @@ public sealed class Logger
         }
 
         EntryAdded?.Invoke(entry);
+    }
+
+    public void Dispose()
+    {
+        lock (_fileLock) { _fileWriter?.Dispose(); _fileWriter = null; }
     }
 }

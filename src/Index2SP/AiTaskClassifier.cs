@@ -16,16 +16,23 @@ namespace Index2SP;
 /// id that isn't in the lists passed in) returns null, and the caller keeps whatever
 /// PayloadConverter already set from the static config.
 /// </summary>
-public sealed class AiTaskClassifier
+public sealed class AiTaskClassifier : IDisposable
 {
     private readonly AppConfig.AiClassifierConfig _config;
     private readonly Logger _log;
+    private HttpClient? _http;
 
     public AiTaskClassifier(AppConfig.AiClassifierConfig config, Logger log)
     {
         _config = config;
         _log = log;
     }
+
+    /// <summary>Shared across every raw-REST call below (Gemini, OpenAI, Ollama) instead of
+    /// opening a fresh connection — and for Gemini/OpenAI a fresh TLS handshake — per call.</summary>
+    private HttpClient Http => _http ??= new HttpClient();
+
+    public void Dispose() => _http?.Dispose();
 
     public sealed record Classification(
         string? ProjectId, List<string> TagIds, string? TaskTitle, bool IsNote, bool IsShopping, List<string> ShoppingItems,
@@ -158,7 +165,7 @@ public sealed class AiTaskClassifier
     private async Task<string> TestGeminiAsync(CancellationToken ct)
     {
         var model = string.IsNullOrWhiteSpace(_config.GeminiModel) ? "gemini-2.5-flash" : _config.GeminiModel.Trim();
-        using var http = new HttpClient();
+        var http = Http;
         using var req = new HttpRequestMessage(HttpMethod.Get,
             $"https://generativelanguage.googleapis.com/v1beta/models/{Uri.EscapeDataString(model)}");
         req.Headers.Add("x-goog-api-key", _config.GeminiApiKey);
@@ -172,7 +179,7 @@ public sealed class AiTaskClassifier
     private async Task<string> TestOpenAiAsync(CancellationToken ct)
     {
         var model = string.IsNullOrWhiteSpace(_config.OpenAiModel) ? "gpt-4o-mini" : _config.OpenAiModel.Trim();
-        using var http = new HttpClient();
+        var http = Http;
         using var req = new HttpRequestMessage(HttpMethod.Get, $"https://api.openai.com/v1/models/{Uri.EscapeDataString(model)}");
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _config.OpenAiApiKey);
         using var resp = await http.SendAsync(req, ct);
@@ -218,7 +225,7 @@ public sealed class AiTaskClassifier
         {
             var url = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=100" +
                       (pageToken is null ? "" : $"&pageToken={Uri.EscapeDataString(pageToken)}");
-            using var http = new HttpClient();
+            var http = Http;
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.Add("x-goog-api-key", _config.GeminiApiKey);
             using var resp = await http.SendAsync(req, ct);
@@ -325,7 +332,7 @@ public sealed class AiTaskClassifier
 
         try
         {
-            using var http = new HttpClient();
+            var http = Http;
             using var req = new HttpRequestMessage(HttpMethod.Post, url) { Content = JsonContent.Create(body) };
             req.Headers.Add("x-goog-api-key", _config.GeminiApiKey);
             using var resp = await http.SendAsync(req, cts.Token);
@@ -378,7 +385,7 @@ public sealed class AiTaskClassifier
 
         try
         {
-            using var http = new HttpClient();
+            var http = Http;
             using var req = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/responses")
             {
                 Content = JsonContent.Create(body),
@@ -510,7 +517,7 @@ public sealed class AiTaskClassifier
             toolConfig = new { functionCallingConfig = new { mode = "ANY", allowedFunctionNames = new[] { ClassifyToolName } } },
         };
 
-        using var http = new HttpClient();
+        var http = Http;
         using var req = new HttpRequestMessage(HttpMethod.Post, url) { Content = JsonContent.Create(body) };
         req.Headers.Add("x-goog-api-key", _config.GeminiApiKey);
         using var resp = await http.SendAsync(req, ct);
@@ -551,7 +558,7 @@ public sealed class AiTaskClassifier
             tool_choice = new { type = "function", function = new { name = ClassifyToolName } },
         };
 
-        using var http = new HttpClient();
+        var http = Http;
         using var req = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/chat/completions")
         {
             Content = JsonContent.Create(body),
@@ -605,7 +612,7 @@ public sealed class AiTaskClassifier
             tools = new[] { BuildFunctionToolWrapper(fields, strict: false) },
         };
 
-        using var http = new HttpClient();
+        var http = Http;
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/chat") { Content = JsonContent.Create(body) };
         using var resp = await http.SendAsync(req, ct);
         var text = await resp.Content.ReadAsStringAsync(ct);

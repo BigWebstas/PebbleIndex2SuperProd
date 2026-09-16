@@ -29,6 +29,7 @@ public sealed class TrayController : IDisposable
     private AiTaskClassifier _classifier;
     private WebhookServer? _server;
     private LogWindow? _logWindow;
+    private SuperProductivityClient? _healthSpClient;
 
     private int _created;
     private int _failed;
@@ -129,13 +130,16 @@ public sealed class TrayController : IDisposable
         _healthTimer = new DispatcherTimer();
         _healthTimer.Tick += async (_, _) =>
         {
-            await RunHealthCheckAsync(manual: false);
-            await RunJoplinHealthCheckAsync(manual: false);
-            await RunGoogleCalendarHealthCheckAsync(manual: false);
-            await RunBeeperHealthCheckAsync(manual: false);
-            await RunTelegramHealthCheckAsync(manual: false);
-            await RunAiHealthCheckAsync(manual: false);
-            await RunWhisperHealthCheckAsync(manual: false);
+            // Independent probes — run them together so one slow/unreachable service doesn't
+            // delay the rest behind its own timeout.
+            await Task.WhenAll(
+                RunHealthCheckAsync(manual: false),
+                RunJoplinHealthCheckAsync(manual: false),
+                RunGoogleCalendarHealthCheckAsync(manual: false),
+                RunBeeperHealthCheckAsync(manual: false),
+                RunTelegramHealthCheckAsync(manual: false),
+                RunAiHealthCheckAsync(manual: false),
+                RunWhisperHealthCheckAsync(manual: false));
         };
         ConfigureHealthTimer();
 
@@ -1046,6 +1050,8 @@ public sealed class TrayController : IDisposable
         {
             _config = AppConfig.LoadOrCreate(_configPath);
             _log.Info("Config reloaded");
+            _healthSpClient?.Dispose();
+            _healthSpClient = null;
             _spHealth = SpHealth.Unknown;
             _joplinHealth = SpHealth.Unknown;
             _googleHealth = SpHealth.Unknown;
@@ -1061,6 +1067,7 @@ public sealed class TrayController : IDisposable
             _aiFailureStreak = 0;
             _whisperFailureStreak = 0;
             _captureTag = new CaptureTagResolver(_config.SuperProductivity, _log);
+            _classifier.Dispose();
             _classifier = new AiTaskClassifier(_config.AiClassifier, _log);
             ConfigureHealthTimer();
             ConfigureOutboxTimer();
@@ -1091,7 +1098,7 @@ public sealed class TrayController : IDisposable
             string message;
             try
             {
-                using var sp = new SuperProductivityClient(_config.SuperProductivity);
+                var sp = _healthSpClient ??= new SuperProductivityClient(_config.SuperProductivity);
                 message = await sp.TestAsync();
                 state = SpHealth.Ok;
             }
@@ -1626,48 +1633,55 @@ public sealed class TrayController : IDisposable
     /// several separate pop-ups.</summary>
     private async Task RunAllConnectionsTestAsync()
     {
-        await RunHealthCheckAsync(manual: false, forceRun: true);
+        var joplinEnabled = !string.IsNullOrWhiteSpace(_config.Joplin.AuthToken);
+        var googleEnabled = !string.IsNullOrWhiteSpace(_config.GoogleCalendar.RefreshToken);
+        var beeperEnabled = !string.IsNullOrWhiteSpace(_config.Beeper.ApiToken);
+
+        // Independent probes — run them together instead of waiting on each in turn.
+        await Task.WhenAll(
+            RunHealthCheckAsync(manual: false, forceRun: true),
+            joplinEnabled ? RunJoplinHealthCheckAsync(manual: false) : Task.CompletedTask,
+            googleEnabled ? RunGoogleCalendarHealthCheckAsync(manual: false) : Task.CompletedTask,
+            beeperEnabled ? RunBeeperHealthCheckAsync(manual: false) : Task.CompletedTask,
+            _config.Telegram.Enabled ? RunTelegramHealthCheckAsync(manual: false) : Task.CompletedTask,
+            _config.AiClassifier.Enabled ? RunAiHealthCheckAsync(manual: false) : Task.CompletedTask,
+            _config.Whisper.Enabled ? RunWhisperHealthCheckAsync(manual: false) : Task.CompletedTask);
+
         var lines = new List<string> { $"Super Productivity: {DescribeHealth(_spHealth)}" };
         var allOk = _spHealth == SpHealth.Ok;
 
-        if (!string.IsNullOrWhiteSpace(_config.Joplin.AuthToken))
+        if (joplinEnabled)
         {
-            await RunJoplinHealthCheckAsync(manual: false);
             lines.Add($"Joplin: {DescribeHealth(_joplinHealth)}");
             allOk &= _joplinHealth == SpHealth.Ok;
         }
 
-        if (!string.IsNullOrWhiteSpace(_config.GoogleCalendar.RefreshToken))
+        if (googleEnabled)
         {
-            await RunGoogleCalendarHealthCheckAsync(manual: false);
             lines.Add($"Google Calendar: {DescribeHealth(_googleHealth)}");
             allOk &= _googleHealth == SpHealth.Ok;
         }
 
-        if (!string.IsNullOrWhiteSpace(_config.Beeper.ApiToken))
+        if (beeperEnabled)
         {
-            await RunBeeperHealthCheckAsync(manual: false);
             lines.Add($"Beeper: {DescribeHealth(_beeperHealth)}");
             allOk &= _beeperHealth == SpHealth.Ok;
         }
 
         if (_config.Telegram.Enabled)
         {
-            await RunTelegramHealthCheckAsync(manual: false);
             lines.Add($"Telegram: {DescribeHealth(_telegramHealth)}");
             allOk &= _telegramHealth == SpHealth.Ok;
         }
 
         if (_config.AiClassifier.Enabled)
         {
-            await RunAiHealthCheckAsync(manual: false);
             lines.Add($"AI classifier ({DescribeProvider(_config.AiClassifier.Provider)}): {DescribeHealth(_aiHealth)}");
             allOk &= _aiHealth == SpHealth.Ok;
         }
 
         if (_config.Whisper.Enabled)
         {
-            await RunWhisperHealthCheckAsync(manual: false);
             lines.Add($"Whisper: {DescribeHealth(_whisperHealth)}");
             allOk &= _whisperHealth == SpHealth.Ok;
         }
@@ -2414,6 +2428,8 @@ public sealed class TrayController : IDisposable
         _healthTimer.Stop();
         _outboxTimer.Stop();
         _updateTimer.Stop();
+        _healthSpClient?.Dispose();
+        _classifier.Dispose();
         try { StopServerAsync().GetAwaiter().GetResult(); } catch { /* shutting down */ }
         try { _tray.IsVisible = false; _tray.Dispose(); } catch { /* ignore */ }
         try { _logWindow?.Close(); } catch { /* ignore */ }

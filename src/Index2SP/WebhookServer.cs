@@ -22,6 +22,7 @@ public sealed class WebhookServer : IAsyncDisposable
     private readonly Outbox _outbox;
     private readonly AiTaskClassifier _classifier;
     private WebApplication? _app;
+    private SuperProductivityClient? _spClient;
 
     public WebhookServer(AppConfig config, Logger log, CaptureTagResolver captureTag, Outbox outbox, AiTaskClassifier classifier)
     {
@@ -91,6 +92,9 @@ public sealed class WebhookServer : IAsyncDisposable
 
     public async Task StopAsync()
     {
+        _spClient?.Dispose();
+        _spClient = null;
+
         if (_app is null) return;
         try
         {
@@ -204,7 +208,9 @@ public sealed class WebhookServer : IAsyncDisposable
                 statusCode: StatusCodes.Status422UnprocessableEntity);
         }
 
-        using var sp = new SuperProductivityClient(_config.SuperProductivity);
+        // Reused across requests (and internally across the calls below) instead of opening a
+        // fresh connection pool per webhook — this listener stays up for the app's lifetime.
+        var sp = _spClient ??= new SuperProductivityClient(_config.SuperProductivity);
         // Not ctx.RequestAborted: if a slow tunnel drops the connection just as SP creates the
         // task, cancelling here would make us re-queue it and create a duplicate on retry. The
         // HTTP client's own 15 s timeout bounds the call.
@@ -329,25 +335,14 @@ public sealed class WebhookServer : IAsyncDisposable
     {
         try
         {
-            var projects = await sp.GetProjectsAsync(CancellationToken.None);
-            var tags = await sp.GetTagsAsync(CancellationToken.None);
+            // Independent reads — fire them together instead of waiting on each in turn.
+            var projectsTask = sp.GetProjectsAsync(CancellationToken.None);
+            var tagsTask = sp.GetTagsAsync(CancellationToken.None);
+            var joplinTagsTask = _config.Joplin.Enabled ? FetchJoplinTagsAsync() : null;
 
-            // Fetched whenever Joplin is enabled — needed both to let the AI pick a Joplin tag
-            // (only asked for while requireTags is on) and to resolve whichever ids end up
-            // applied (AI-picked or the static default) to the titles Joplin's API actually wants.
-            IReadOnlyList<SpNamedItem> joplinTags = Array.Empty<SpNamedItem>();
-            if (_config.Joplin.Enabled)
-            {
-                try
-                {
-                    using var joplin = new JoplinClient(_config.Joplin);
-                    joplinTags = await joplin.GetTagsAsync(CancellationToken.None);
-                }
-                catch (Exception ex) when (ex is JoplinApiException or HttpRequestException or TaskCanceledException)
-                {
-                    _log.Warn($"AI classify: couldn't load Joplin tags ({ex.Message}) — continuing without them");
-                }
-            }
+            var projects = await projectsTask;
+            var tags = await tagsTask;
+            var joplinTags = joplinTagsTask is null ? Array.Empty<SpNamedItem>() : await joplinTagsTask;
 
             // Gemini/OpenAI search under their own credential; Ollama has none of its own and
             // falls back to Claude, so it needs the same key Claude itself would.
@@ -439,6 +434,24 @@ public sealed class WebhookServer : IAsyncDisposable
         {
             _log.Warn($"AI classify skipped (couldn't load projects/tags): {ex.Message}");
             return new AiRoutingResult(null, false);
+        }
+    }
+
+    /// <summary>Needed both to let the AI pick a Joplin tag (only asked for while requireTags is
+    /// on) and to resolve whichever ids end up applied (AI-picked or the static default) to the
+    /// titles Joplin's API actually wants. Never throws — a failure just means continuing without
+    /// Joplin tags, same as before this was pulled out to run alongside the SP project/tag fetch.</summary>
+    private async Task<IReadOnlyList<SpNamedItem>> FetchJoplinTagsAsync()
+    {
+        try
+        {
+            using var joplin = new JoplinClient(_config.Joplin);
+            return await joplin.GetTagsAsync(CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is JoplinApiException or HttpRequestException or TaskCanceledException)
+        {
+            _log.Warn($"AI classify: couldn't load Joplin tags ({ex.Message}) — continuing without them");
+            return Array.Empty<SpNamedItem>();
         }
     }
 
