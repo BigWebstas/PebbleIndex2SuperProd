@@ -14,9 +14,9 @@ public partial class ToastWindow : Window
     private static ToastWindow? _current;
     private readonly DispatcherTimer _timer;
 
-    public ToastWindow() : this("Index2SP", string.Empty, NotifyKind.Info) { }
+    public ToastWindow() : this("Index2SP", string.Empty, NotifyKind.Info, null, null) { }
 
-    public ToastWindow(string title, string body, NotifyKind kind)
+    public ToastWindow(string title, string body, NotifyKind kind, string? actionLabel = null, Action? action = null)
     {
         InitializeComponent();
 
@@ -29,6 +29,16 @@ public partial class ToastWindow : Window
             _ => new SolidColorBrush(Color.FromRgb(0x1F, 0x6F, 0xEB)),
         };
 
+        if (actionLabel is not null && action is not null)
+        {
+            ActionButton.Content = actionLabel;
+            ActionButton.IsVisible = true;
+            // Without this, the Window's own PointerPressed (dismiss-on-click, below) fires
+            // first on bubble and closes the toast before the Button's Click ever runs.
+            ActionButton.PointerPressed += (_, e) => e.Handled = true;
+            ActionButton.Click += (_, _) => { action(); SafeClose(); };
+        }
+
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(6) };
         _timer.Tick += (_, _) => SafeClose();
 
@@ -37,10 +47,10 @@ public partial class ToastWindow : Window
         Closed += (_, _) => { if (ReferenceEquals(_current, this)) _current = null; };
     }
 
-    public static void Show(string title, string body, NotifyKind kind)
+    public static void Show(string title, string body, NotifyKind kind, string? actionLabel = null, Action? action = null)
     {
         _current?.SafeClose();
-        var toast = new ToastWindow(title, body, kind);
+        var toast = new ToastWindow(title, body, kind, actionLabel, action);
         _current = toast;
         toast.Show();
     }

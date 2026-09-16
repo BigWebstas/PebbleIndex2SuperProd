@@ -68,6 +68,7 @@ public sealed class TrayController : IDisposable
     private bool _updateCheckInFlight;
     private string? _downloadedUpdatePath;
     private bool _updateDownloadInFlight;
+    private int? _updateDownloadPercent;
     private readonly DispatcherTimer _updateTimer;
 
     private IReadOnlyList<SpNamedItem> _projects = Array.Empty<SpNamedItem>();
@@ -201,7 +202,9 @@ public sealed class TrayController : IDisposable
             if (_downloadedUpdatePath is not null)
                 menu.Add(Action($"✓ v{update.Version} downloaded — click to install", LaunchDownloadedUpdate));
             else if (_updateDownloadInFlight)
-                menu.Add(Disabled($"⬇ Downloading v{update.Version}…"));
+                menu.Add(Disabled(_updateDownloadPercent is { } pct
+                    ? $"⬇ Downloading v{update.Version}… {pct}%"
+                    : $"⬇ Downloading v{update.Version}…"));
             else if (update.AssetUrl is not null)
                 menu.Add(Action($"⬆ Update available: v{update.Version} — click to download", () => _ = DownloadUpdateAsync(update)));
             else
@@ -1474,7 +1477,9 @@ public sealed class TrayController : IDisposable
             if (found is not null && !wasKnown)
             {
                 _log.Info($"Update available: v{found.Version}");
-                Notify("Update available", $"Index2SP v{found.Version} is available — see the tray menu.", NotifyKind.Info);
+                Notify("Update available", $"Index2SP v{found.Version} is available — see the tray menu.", NotifyKind.Info,
+                    actionLabel: found.AssetUrl is not null ? "Download" : null,
+                    action: found.AssetUrl is not null ? () => _ = DownloadUpdateAsync(found) : null);
                 RefreshTray();
             }
             else if (found is null && wasKnown)
@@ -1485,7 +1490,9 @@ public sealed class TrayController : IDisposable
             if (manual)
                 Notify(found is not null ? "Update available" : "Check for updates",
                     found is not null ? $"v{found.Version} is available." : $"You're up to date (v{AppInfo.Version}).",
-                    NotifyKind.Info, force: true);
+                    NotifyKind.Info, force: true,
+                    actionLabel: found?.AssetUrl is not null ? "Download" : null,
+                    action: found?.AssetUrl is not null ? () => _ = DownloadUpdateAsync(found) : null);
         }
         finally
         {
@@ -1499,12 +1506,18 @@ public sealed class TrayController : IDisposable
     {
         if (_updateDownloadInFlight) return;
         _updateDownloadInFlight = true;
+        _updateDownloadPercent = null;
         RebuildMenu();
         try
         {
             using var checker = new UpdateChecker();
             _log.Info($"Downloading update v{update.Version}…");
-            var path = await checker.DownloadAssetAsync(update);
+            var progress = new Progress<int>(pct =>
+            {
+                _updateDownloadPercent = pct;
+                RebuildMenu();
+            });
+            var path = await checker.DownloadAssetAsync(update, progress);
             _downloadedUpdatePath = path;
             _log.Info($"Downloaded update to {path}");
             Notify("Update ready", $"v{update.Version} downloaded — open the tray menu to install.", NotifyKind.Info, force: true);
@@ -1517,6 +1530,7 @@ public sealed class TrayController : IDisposable
         finally
         {
             _updateDownloadInFlight = false;
+            _updateDownloadPercent = null;
             RebuildMenu();
         }
     }
@@ -2436,10 +2450,10 @@ public sealed class TrayController : IDisposable
         RebuildMenu();
     }
 
-    private void Notify(string title, string body, NotifyKind kind, bool force = false)
+    private void Notify(string title, string body, NotifyKind kind, bool force = false, string? actionLabel = null, Action? action = null)
     {
         if (!force && kind == NotifyKind.Info && !_config.Notifications) return;
-        Notifier.Show(_log, title, body, kind);
+        Notifier.Show(_log, title, body, kind, actionLabel, action);
     }
 
     public void Dispose()

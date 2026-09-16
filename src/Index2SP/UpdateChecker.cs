@@ -79,8 +79,10 @@ public sealed class UpdateChecker : IDisposable
 
     /// <summary>Downloads this platform's build to a temp file and returns its path. Uses its own
     /// HttpClient (redirects allowed, no timeout cap) since release assets are tens of MB and
-    /// served from a redirecting CDN URL — unlike every other call this class makes.</summary>
-    public async Task<string> DownloadAssetAsync(UpdateInfo info, CancellationToken ct = default)
+    /// served from a redirecting CDN URL — unlike every other call this class makes.
+    /// <paramref name="progress"/> reports 0-100 as bytes arrive; never called at all when the
+    /// server doesn't send a Content-Length (progress is unknowable, not just slow).</summary>
+    public async Task<string> DownloadAssetAsync(UpdateInfo info, IProgress<int>? progress = null, CancellationToken ct = default)
     {
         if (info.AssetUrl is null || info.AssetFileName is null)
             throw new UpdateCheckException("No downloadable build found for this platform in the release.");
@@ -93,9 +95,32 @@ public sealed class UpdateChecker : IDisposable
         if (!resp.IsSuccessStatusCode)
             throw new UpdateCheckException($"Download failed: HTTP {(int)resp.StatusCode}.");
 
-        await using (var src = await resp.Content.ReadAsStreamAsync(ct))
-        await using (var dst = File.Create(dest))
+        var total = resp.Content.Headers.ContentLength;
+
+        await using var src = await resp.Content.ReadAsStreamAsync(ct);
+        await using var dst = File.Create(dest);
+
+        if (total is not > 0 || progress is null)
+        {
             await src.CopyToAsync(dst, ct);
+            return dest;
+        }
+
+        var buffer = new byte[81920];
+        long copied = 0;
+        var lastPercent = -1;
+        int read;
+        while ((read = await src.ReadAsync(buffer, ct)) > 0)
+        {
+            await dst.WriteAsync(buffer.AsMemory(0, read), ct);
+            copied += read;
+            var percent = (int)(copied * 100 / total.Value);
+            if (percent != lastPercent)
+            {
+                lastPercent = percent;
+                progress.Report(percent);
+            }
+        }
 
         return dest;
     }

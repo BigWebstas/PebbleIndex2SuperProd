@@ -13,11 +13,13 @@ internal static class Notifier
 {
     private static bool? _notifySend;
 
-    public static void Show(Logger log, string title, string body, NotifyKind kind)
+    public static void Show(Logger log, string title, string body, NotifyKind kind, string? actionLabel = null, Action? action = null)
     {
         try
         {
-            if (OperatingSystem.IsLinux() && NotifySendAvailable())
+            // notify-send can't carry a clickable action without a persistent DBus listener this
+            // app doesn't run, so an actionable notification always uses our own toast instead.
+            if (actionLabel is null && OperatingSystem.IsLinux() && NotifySendAvailable())
             {
                 var urgency = kind switch
                 {
@@ -37,7 +39,7 @@ internal static class Notifier
 
             Dispatcher.UIThread.Post(() =>
             {
-                try { ToastWindow.Show(title, body, kind); }
+                try { ToastWindow.Show(title, body, kind, actionLabel, action); }
                 catch (Exception ex) { log.Error("toast failed", ex); }
             });
         }
