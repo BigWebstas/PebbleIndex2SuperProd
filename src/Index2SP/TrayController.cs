@@ -60,9 +60,9 @@ public sealed class TrayController : IDisposable
     private int _aiFailureStreak;
     private bool _aiHealthCheckInFlight;
 
-    private SpHealth _whisperHealth = SpHealth.Unknown;
-    private int _whisperFailureStreak;
-    private bool _whisperHealthCheckInFlight;
+    private SpHealth _wyomingHealth = SpHealth.Unknown;
+    private int _wyomingFailureStreak;
+    private bool _wyomingHealthCheckInFlight;
 
     private UpdateChecker.UpdateInfo? _updateAvailable;
     private bool _updateCheckInFlight;
@@ -140,7 +140,7 @@ public sealed class TrayController : IDisposable
                 RunBeeperHealthCheckAsync(manual: false),
                 RunTelegramHealthCheckAsync(manual: false),
                 RunAiHealthCheckAsync(manual: false),
-                RunWhisperHealthCheckAsync(manual: false));
+                RunWyomingHealthCheckAsync(manual: false));
         };
         ConfigureHealthTimer();
 
@@ -226,7 +226,7 @@ public sealed class TrayController : IDisposable
         menu.Add(new NativeMenuItem("Google Calendar") { Menu = BuildGoogleCalendarSubmenu() });
         menu.Add(new NativeMenuItem("Beeper messages") { Menu = BuildBeeperSubmenu() });
         menu.Add(new NativeMenuItem("Telegram bot") { Menu = BuildTelegramSubmenu() });
-        menu.Add(new NativeMenuItem("Whisper transcription") { Menu = BuildWhisperSubmenu() });
+        menu.Add(new NativeMenuItem("Wyoming transcription") { Menu = BuildWyomingSubmenu() });
         menu.Add(new NativeMenuItem("Web search") { Menu = BuildWebSearchSubmenu() });
         menu.Add(new NativeMenuItem("Webhook receipt") { Menu = BuildWebhookReceiptSubmenu() });
         menu.Add(new NativeMenuItemSeparator());
@@ -340,15 +340,15 @@ public sealed class TrayController : IDisposable
             line += $"  ·  {ai}";
         }
 
-        if (_config.Whisper.Enabled)
+        if (_config.Wyoming.Enabled)
         {
-            var whisper = _whisperHealth switch
+            var wyoming = _wyomingHealth switch
             {
-                SpHealth.Ok => "Whisper reachable",
-                SpHealth.Unreachable => "Whisper unreachable",
-                _ => "Whisper not checked yet",
+                SpHealth.Ok => "Wyoming reachable",
+                SpHealth.Unreachable => "Wyoming unreachable",
+                _ => "Wyoming not checked yet",
             };
-            line += $"  ·  {whisper}";
+            line += $"  ·  {wyoming}";
         }
 
         return line;
@@ -928,25 +928,28 @@ public sealed class TrayController : IDisposable
         return m;
     }
 
-    private NativeMenu BuildWhisperSubmenu()
+    private NativeMenu BuildWyomingSubmenu()
     {
         var m = new NativeMenu();
-        var cfg = _config.Whisper;
+        var cfg = _config.Wyoming;
 
         var enabled = new NativeMenuItem("Enabled")
         {
             ToggleType = NativeMenuItemToggleType.CheckBox,
             IsChecked = cfg.Enabled,
         };
-        enabled.Click += (_, _) => ToggleWhisperEnabled();
+        enabled.Click += (_, _) => ToggleWyomingEnabled();
         m.Add(enabled);
 
-        m.Add(Action("Set server URL…", () => _ = SetWhisperBaseUrlAsync()));
-        m.Add(Action("Set model…", () => _ = SetWhisperModelAsync()));
-        m.Add(Action("Test connection", () => _ = RunWhisperHealthCheckAsync(manual: true)));
-        m.Add(Disabled($"Server: {cfg.BaseUrl}"));
+        m.Add(Action("Set server (host:port)…", () => _ = SetWyomingEndpointAsync()));
+        m.Add(Action("Set model…", () => _ = SetWyomingModelAsync()));
+        m.Add(Action("Set language…", () => _ = SetWyomingLanguageAsync()));
+        m.Add(Action("Test connection", () => _ = RunWyomingHealthCheckAsync(manual: true)));
+        m.Add(Disabled($"Server: {cfg.Host}:{cfg.Port}"));
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.Model) ? "Model: server default" : $"Model: {cfg.Model}"));
-        m.Add(Disabled("Local, OpenAI-compatible Whisper server — fallback only, when Pebble sends audio but no text"));
+        if (!string.IsNullOrWhiteSpace(cfg.Language))
+            m.Add(Disabled($"Language: {cfg.Language}"));
+        m.Add(Disabled("Local Wyoming STT server (wyoming-whisper, wyoming-faster-whisper) — fallback only, when Pebble sends audio but no text"));
         return m;
     }
 
@@ -1012,7 +1015,7 @@ public sealed class TrayController : IDisposable
             _ = RunBeeperHealthCheckAsync(manual: false);
             _ = RunTelegramHealthCheckAsync(manual: false);
             _ = RunAiHealthCheckAsync(manual: false);
-            _ = RunWhisperHealthCheckAsync(manual: false);
+            _ = RunWyomingHealthCheckAsync(manual: false);
             _ = RefreshListsAsync(notifyOnError: false);
         }
         catch (Exception ex)
@@ -1075,14 +1078,14 @@ public sealed class TrayController : IDisposable
             _beeperHealth = SpHealth.Unknown;
             _telegramHealth = SpHealth.Unknown;
             _aiHealth = SpHealth.Unknown;
-            _whisperHealth = SpHealth.Unknown;
+            _wyomingHealth = SpHealth.Unknown;
             _spFailureStreak = 0;
             _joplinFailureStreak = 0;
             _googleFailureStreak = 0;
             _beeperFailureStreak = 0;
             _telegramFailureStreak = 0;
             _aiFailureStreak = 0;
-            _whisperFailureStreak = 0;
+            _wyomingFailureStreak = 0;
             _captureTag = new CaptureTagResolver(_config.SuperProductivity, _log);
             _classifier.Dispose();
             _classifier = new AiTaskClassifier(_config.AiClassifier, _log);
@@ -1390,24 +1393,24 @@ public sealed class TrayController : IDisposable
         }
     }
 
-    /// <summary>Only runs while Whisper transcription is enabled.</summary>
-    private async Task RunWhisperHealthCheckAsync(bool manual)
+    /// <summary>Only runs while Wyoming transcription is enabled.</summary>
+    private async Task RunWyomingHealthCheckAsync(bool manual)
     {
-        if (!_config.Whisper.Enabled)
+        if (!_config.Wyoming.Enabled)
         {
-            if (manual) Notify("Whisper", "Disabled — nothing to test.", NotifyKind.Error, force: true);
+            if (manual) Notify("Wyoming", "Disabled — nothing to test.", NotifyKind.Error, force: true);
             return;
         }
-        if (!manual && _whisperHealthCheckInFlight) return;
-        _whisperHealthCheckInFlight = true;
+        if (!manual && _wyomingHealthCheckInFlight) return;
+        _wyomingHealthCheckInFlight = true;
         try
         {
             SpHealth state;
             string message;
             try
             {
-                using var whisper = new WhisperClient(_config.Whisper);
-                message = await whisper.TestAsync();
+                using var wyoming = new WyomingClient(_config.Wyoming);
+                message = await wyoming.TestAsync();
                 state = SpHealth.Ok;
             }
             catch (Exception ex)
@@ -1416,35 +1419,35 @@ public sealed class TrayController : IDisposable
                 state = SpHealth.Unreachable;
             }
 
-            var prev = _whisperHealth;
-            _whisperHealth = state;
-            var outage = CrossedOutageThreshold(state, ref _whisperFailureStreak);
+            var prev = _wyomingHealth;
+            _wyomingHealth = state;
+            var outage = CrossedOutageThreshold(state, ref _wyomingFailureStreak);
 
             if (state != prev)
             {
                 if (state == SpHealth.Ok)
                     _log.Info(prev == SpHealth.Unreachable
-                        ? $"Whisper connection restored — {message}"
-                        : $"Whisper reachable — {message}");
+                        ? $"Wyoming connection restored — {message}"
+                        : $"Wyoming reachable — {message}");
                 else
-                    _log.Warn($"Whisper unreachable — {message}");
+                    _log.Warn($"Wyoming unreachable — {message}");
 
                 RefreshTray();
             }
 
             if (!manual && outage)
             {
-                Notify("Whisper unreachable", message, NotifyKind.Warning);
-                _ = CreateOutageTaskAsync("Whisper", message);
+                Notify("Wyoming unreachable", message, NotifyKind.Warning);
+                _ = CreateOutageTaskAsync("Wyoming", message);
             }
 
             if (manual)
-                Notify(state == SpHealth.Ok ? "Whisper" : "Whisper — not reachable",
+                Notify(state == SpHealth.Ok ? "Wyoming" : "Wyoming — not reachable",
                     message, state == SpHealth.Ok ? NotifyKind.Info : NotifyKind.Error, force: true);
         }
         finally
         {
-            _whisperHealthCheckInFlight = false;
+            _wyomingHealthCheckInFlight = false;
         }
     }
 
@@ -1686,7 +1689,7 @@ public sealed class TrayController : IDisposable
             beeperEnabled ? RunBeeperHealthCheckAsync(manual: false) : Task.CompletedTask,
             _config.Telegram.Enabled ? RunTelegramHealthCheckAsync(manual: false) : Task.CompletedTask,
             _config.AiClassifier.Enabled ? RunAiHealthCheckAsync(manual: false) : Task.CompletedTask,
-            _config.Whisper.Enabled ? RunWhisperHealthCheckAsync(manual: false) : Task.CompletedTask);
+            _config.Wyoming.Enabled ? RunWyomingHealthCheckAsync(manual: false) : Task.CompletedTask);
 
         var lines = new List<string> { $"Super Productivity: {DescribeHealth(_spHealth)}" };
         var allOk = _spHealth == SpHealth.Ok;
@@ -1721,10 +1724,10 @@ public sealed class TrayController : IDisposable
             allOk &= _aiHealth == SpHealth.Ok;
         }
 
-        if (_config.Whisper.Enabled)
+        if (_config.Wyoming.Enabled)
         {
-            lines.Add($"Whisper: {DescribeHealth(_whisperHealth)}");
-            allOk &= _whisperHealth == SpHealth.Ok;
+            lines.Add($"Wyoming: {DescribeHealth(_wyomingHealth)}");
+            allOk &= _wyomingHealth == SpHealth.Ok;
         }
 
         Notify(allOk ? "All connections OK" : "Some connections failed",
@@ -2187,35 +2190,49 @@ public sealed class TrayController : IDisposable
         SaveConfig("Telegram bot token updated");
     }
 
-    // ---- Whisper ------------------------------------------------------
+    // ---- Wyoming ------------------------------------------------------
 
-    private void ToggleWhisperEnabled()
+    private void ToggleWyomingEnabled()
     {
-        var cfg = _config.Whisper;
+        var cfg = _config.Wyoming;
         cfg.Enabled = !cfg.Enabled;
-        SaveConfig($"Whisper transcription {(cfg.Enabled ? "enabled" : "disabled")}");
+        SaveConfig($"Wyoming transcription {(cfg.Enabled ? "enabled" : "disabled")}");
     }
 
-    private async Task SetWhisperBaseUrlAsync()
+    private async Task SetWyomingEndpointAsync()
     {
-        var value = await InputDialog.ShowAsync("Whisper server URL",
-            "Paste the base URL of your local Whisper server, e.g. http://127.0.0.1:8000.\n" +
-            "Leave blank to keep the current one.", masked: false);
+        var value = await InputDialog.ShowAsync("Wyoming server address",
+            "Enter the host and port of your local Wyoming STT server, e.g. 127.0.0.1:10300 or localhost:10300.\n" +
+            $"Current: {_config.Wyoming.Host}:{_config.Wyoming.Port}", masked: false);
         if (value is null || value.Trim().Length == 0) return;
 
-        _config.Whisper.BaseUrl = value.Trim();
-        SaveConfig("Whisper server URL updated");
+        var (host, port) = AppConfig.ParseEndpoint(value.Trim(), _config.Wyoming.Port);
+        _config.Wyoming.Host = host;
+        _config.Wyoming.Port = port;
+        SaveConfig("Wyoming server updated");
+        _ = RunWyomingHealthCheckAsync(manual: false);
     }
 
-    private async Task SetWhisperModelAsync()
+    private async Task SetWyomingModelAsync()
     {
-        var value = await InputDialog.ShowAsync("Whisper model",
-            "Model name to request, if your server serves more than one.\n" +
+        var value = await InputDialog.ShowAsync("Wyoming model",
+            "Model name to request (e.g. tiny, base, small), if your server serves more than one.\n" +
             "Leave blank to use whatever the server has loaded by default.", masked: false);
         if (value is null) return;
 
-        _config.Whisper.Model = value.Trim();
-        SaveConfig(string.IsNullOrWhiteSpace(value) ? "Whisper model cleared (server default)" : "Whisper model updated");
+        _config.Wyoming.Model = value.Trim();
+        SaveConfig(string.IsNullOrWhiteSpace(value) ? "Wyoming model cleared (server default)" : "Wyoming model updated");
+    }
+
+    private async Task SetWyomingLanguageAsync()
+    {
+        var value = await InputDialog.ShowAsync("Wyoming language",
+            "Spoken language code to request (e.g. 'en', 'es', 'de').\n" +
+            "Leave blank for automatic language detection or server default.", masked: false);
+        if (value is null) return;
+
+        _config.Wyoming.Language = value.Trim();
+        SaveConfig(string.IsNullOrWhiteSpace(value) ? "Wyoming language cleared (auto-detect)" : "Wyoming language updated");
     }
 
     // ---- Web search -----------------------------------------------------

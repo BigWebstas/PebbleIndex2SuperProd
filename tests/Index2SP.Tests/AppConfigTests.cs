@@ -141,13 +141,39 @@ public class AppConfigTests : IDisposable
     }
 
     [Fact]
-    public void Normalize_DefaultsBlankWhisperBaseUrl()
+    public void Normalize_DefaultsBlankWyomingEndpoint()
     {
-        File.WriteAllText(ConfigPath, """{ "whisper": { "baseUrl": "" } }""");
+        File.WriteAllText(ConfigPath, """{ "wyoming": { "host": "", "port": 0 } }""");
 
         var config = AppConfig.LoadOrCreate(ConfigPath);
 
-        Assert.Equal("http://127.0.0.1:8000", config.Whisper.BaseUrl);
+        Assert.Equal("127.0.0.1", config.Wyoming.Host);
+        Assert.Equal(10300, config.Wyoming.Port);
+        Assert.Equal("tcp://127.0.0.1:10300", config.Wyoming.BaseUrl);
+    }
+
+    [Fact]
+    public void Normalize_MigratesLegacyWhisperConfig()
+    {
+        File.WriteAllText(ConfigPath, """{ "whisper": { "enabled": true, "baseUrl": "tcp://192.168.1.50:10300", "model": "tiny", "timeoutSeconds": 45 } }""");
+
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.True(config.Wyoming.Enabled);
+        Assert.Equal("192.168.1.50", config.Wyoming.Host);
+        Assert.Equal(10300, config.Wyoming.Port);
+        Assert.Equal("tiny", config.Wyoming.Model);
+        Assert.Equal(45, config.Wyoming.TimeoutSeconds);
+    }
+
+    [Fact]
+    public void ParseEndpoint_HandlesVariousFormats()
+    {
+        Assert.Equal(("127.0.0.1", 10300), AppConfig.ParseEndpoint(""));
+        Assert.Equal(("192.168.1.10", 10300), AppConfig.ParseEndpoint("192.168.1.10"));
+        Assert.Equal(("192.168.1.10", 10400), AppConfig.ParseEndpoint("192.168.1.10:10400"));
+        Assert.Equal(("10.0.0.1", 10300), AppConfig.ParseEndpoint("tcp://10.0.0.1:10300"));
+        Assert.Equal(("localhost", 10300), AppConfig.ParseEndpoint("http://localhost:10300/"));
     }
 
     [Fact]

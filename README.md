@@ -16,8 +16,9 @@ Pebble Index 01 ──HTTPS──▶ your tunnel ──▶ Index2SP :8787/pebble
 
 - Every note becomes an SP task — title from the transcription, full text + metadata in notes.
 - SP unreachable? Queued to a local outbox, retried until it lands.
-- Audio with no transcription (Pebble sent audio only)? With `whisper` on, a local Whisper server
-  transcribes it instead of the webhook being rejected.
+- Audio with no transcription (Pebble sent audio only)? With Wyoming transcription on, a local
+  Wyoming speech-to-text server (e.g. wyoming-whisper, wyoming-faster-whisper) transcribes it
+  instead of the webhook being rejected.
 - With `aiClassifier` on, the AI also: cleans the task title (strips "add a task to", "remind
   me to", "send a message to X saying", etc. down to just the content), picks project/tags,
   splits multi-item shopping lists, sets due dates, and — per destination toggle — files notes
@@ -84,10 +85,12 @@ Two setups need an extra step first:
   the bot's `getUpdates` response (or ask [@userinfobot](https://t.me/userinfobot)) for that
   chat's ID — set it under **Web search** and/or **Webhook receipt**.
 
-**Whisper** needs a local, OpenAI-compatible speech-to-text server already running — whisper.cpp's
-own `server` example, faster-whisper-server, or LocalAI all work, since they share the same
-`POST /v1/audio/transcriptions` contract. It's a fallback only: Pebble's own transcription is
-always used when present, and this only fires for a genuinely audio-only webhook.
+**Wyoming transcription** connects to a local speech-to-text server implementing the Wyoming
+protocol (such as `wyoming-whisper` or `wyoming-faster-whisper`, common in Home Assistant setups)
+over TCP (defaulting to port 10300). Compressed audio like Pebble's `.m4a` files is automatically
+decoded to PCM via ffmpeg, while standard PCM WAV files are decoded directly. It's a fallback only:
+Pebble's own transcription is always used when present, and this only fires for a genuinely
+audio-only webhook.
 
 **Web search** ("search the web for...", "google...", "what is the latest version of X") searches
 via whichever provider is selected for classification — Claude and Gemini each have a real
@@ -127,7 +130,7 @@ CI builds every push/PR; pushing a `v*` tag cuts a [GitHub Release](https://gith
 
 ## Limitations
 
-- Audio-only webhooks are rejected (422) — no text, no task — unless `whisper` is on.
+- Audio-only webhooks are rejected (422) — no text, no task — unless Wyoming transcription is on.
 - No recurring tasks or subtasks (the SP REST API doesn't support them).
 - Outbox retries check for an exact title+notes match before recreating a task, which covers a
   lost reply after Super Productivity actually created it — but not two genuinely separate

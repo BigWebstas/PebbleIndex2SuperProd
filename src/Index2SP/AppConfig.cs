@@ -36,7 +36,7 @@ public sealed class AppConfig
     public int HealthCheckSeconds { get; set; } = 60;
 
     /// <summary>Consecutive failed probes (across any of the health checks — Super Productivity,
-    /// Joplin, Google Calendar, Beeper, Telegram, Whisper, AI classifier) needed before an outage
+    /// Joplin, Google Calendar, Beeper, Telegram, Wyoming, AI classifier) needed before an outage
     /// notification and outage task fire. A single blip stays quiet. Clamped to 1–20.</summary>
     public int OutageFailureThreshold { get; set; } = 3;
 
@@ -66,8 +66,15 @@ public sealed class AppConfig
     public GoogleCalendarConfig GoogleCalendar { get; set; } = new();
 
     public BeeperConfig Beeper { get; set; } = new();
+ 
+    public WyomingConfig Wyoming { get; set; } = new();
 
-    public WhisperConfig Whisper { get; set; } = new();
+    /// <summary>Backward-compatibility alias for configurations referencing "whisper".</summary>
+    [JsonPropertyName("whisper")]
+    public WyomingConfig? LegacyWhisper { get; set; }
+
+    [JsonIgnore]
+    public WyomingConfig Whisper => Wyoming;
 
     public WebSearchConfig WebSearch { get; set; } = new();
 
@@ -136,26 +143,47 @@ public sealed class AppConfig
     /// <summary>
     /// Optional: when Pebble sends a webhook with an audio file but no transcription text (the
     /// case that's normally rejected with a 422), transcribe the audio locally instead of
-    /// dropping it. Points at a local, OpenAI-compatible Whisper server — whisper.cpp's own
-    /// `server` example, faster-whisper-server, LocalAI, etc. all implement the same
-    /// POST /v1/audio/transcriptions contract. Never overrides a transcription Pebble already
-    /// sent; only fills in for a genuinely audio-only webhook.
+    /// dropping it. Connects to a local speech-to-text server implementing the Wyoming protocol
+    /// (wyoming-whisper, wyoming-faster-whisper) over TCP. Never overrides a transcription Pebble
+    /// already sent; only fills in for a genuinely audio-only webhook.
     /// </summary>
-    public sealed class WhisperConfig
+    public sealed class WyomingConfig
     {
         public bool Enabled { get; set; } = false;
 
-        /// <summary>Base URL of the local Whisper server.</summary>
-        public string BaseUrl { get; set; } = "http://127.0.0.1:8000";
+        /// <summary>Host of the local Wyoming server, e.g. "127.0.0.1" or "127.0.0.1:10300".</summary>
+        public string Host { get; set; } = "127.0.0.1";
+
+        /// <summary>TCP port of the Wyoming server (Wyoming Whisper defaults to 10300).</summary>
+        public int Port { get; set; } = 10300;
 
         /// <summary>Model name to request, if your server serves more than one. Blank uses
         /// whatever the server has loaded by default.</summary>
         public string Model { get; set; } = "";
 
+        /// <summary>Spoken language code (e.g. "en") to request. Blank uses the server default / auto-detect.</summary>
+        public string Language { get; set; } = "";
+
         /// <summary>Seconds to wait for a transcription before giving up and falling back to the
         /// normal audio-only rejection. Transcription is slower than a classify call, so this has
         /// a higher ceiling than the other integrations. Clamped 5–120.</summary>
         public int TimeoutSeconds { get; set; } = 30;
+
+        /// <summary>Backward-compatibility helper that accepts or returns host:port or baseUrl.</summary>
+        [JsonPropertyName("baseUrl")]
+        public string? BaseUrl
+        {
+            get => $"tcp://{Host}:{Port}";
+            set
+            {
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    var (h, p) = ParseEndpoint(value, Port);
+                    Host = h;
+                    Port = p;
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -439,11 +467,27 @@ public sealed class AppConfig
         Beeper ??= new BeeperConfig();
         Beeper.TimeoutSeconds = Math.Clamp(Beeper.TimeoutSeconds, 2, 30);
         if (string.IsNullOrWhiteSpace(Beeper.BaseUrl)) Beeper.BaseUrl = "http://127.0.0.1:23373";
-        Beeper.BaseUrl = Beeper.BaseUrl.TrimEnd('/');
-        Whisper ??= new WhisperConfig();
-        Whisper.TimeoutSeconds = Math.Clamp(Whisper.TimeoutSeconds, 5, 120);
-        if (string.IsNullOrWhiteSpace(Whisper.BaseUrl)) Whisper.BaseUrl = "http://127.0.0.1:8000";
-        Whisper.BaseUrl = Whisper.BaseUrl.TrimEnd('/');
+        if (LegacyWhisper is not null)
+        {
+            if (LegacyWhisper.Enabled) Wyoming.Enabled = true;
+            if (!string.IsNullOrWhiteSpace(LegacyWhisper.Host) && LegacyWhisper.Host != "127.0.0.1")
+                Wyoming.Host = LegacyWhisper.Host;
+            if (LegacyWhisper.Port is > 0 and <= 65535 && LegacyWhisper.Port != 10300)
+                Wyoming.Port = LegacyWhisper.Port;
+            if (!string.IsNullOrWhiteSpace(LegacyWhisper.Model))
+                Wyoming.Model = LegacyWhisper.Model;
+            if (!string.IsNullOrWhiteSpace(LegacyWhisper.Language))
+                Wyoming.Language = LegacyWhisper.Language;
+            if (LegacyWhisper.TimeoutSeconds != 30 && LegacyWhisper.TimeoutSeconds != 0)
+                Wyoming.TimeoutSeconds = LegacyWhisper.TimeoutSeconds;
+        }
+
+        Wyoming ??= new WyomingConfig();
+        Wyoming.TimeoutSeconds = Math.Clamp(Wyoming.TimeoutSeconds, 5, 120);
+        if (string.IsNullOrWhiteSpace(Wyoming.Host)) Wyoming.Host = "127.0.0.1";
+        var (wyomingHost, wyomingPort) = ParseEndpoint(Wyoming.Host, Wyoming.Port);
+        Wyoming.Host = wyomingHost;
+        Wyoming.Port = wyomingPort is > 0 and <= 65535 ? wyomingPort : 10300;
         WebSearch ??= new WebSearchConfig();
         WebSearch.MaxUses = Math.Clamp(WebSearch.MaxUses, 1, 10);
         WebSearch.SendDelaySeconds = Math.Clamp(WebSearch.SendDelaySeconds, 0, 60);
@@ -455,6 +499,30 @@ public sealed class AppConfig
             SuperProductivity.BaseUrl = "http://127.0.0.1:3876";
         SuperProductivity.BaseUrl = SuperProductivity.BaseUrl.TrimEnd('/');
         SuperProductivity.TagIds ??= new List<string>();
+    }
+
+    public static (string Host, int Port) ParseEndpoint(string? endpoint, int defaultPort = 10300)
+    {
+        if (string.IsNullOrWhiteSpace(endpoint))
+            return ("127.0.0.1", defaultPort);
+
+        var trimmed = endpoint.Trim();
+        if (trimmed.StartsWith("tcp://", StringComparison.OrdinalIgnoreCase))
+            trimmed = trimmed[6..];
+        else if (trimmed.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+            trimmed = trimmed[7..];
+        else if (trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            trimmed = trimmed[8..];
+
+        trimmed = trimmed.TrimEnd('/');
+        var colon = trimmed.LastIndexOf(':');
+        if (colon > 0 && int.TryParse(trimmed[(colon + 1)..], out var port) && port is > 0 and <= 65535)
+        {
+            var host = trimmed[..colon].Trim('[', ']');
+            return (string.IsNullOrWhiteSpace(host) ? "127.0.0.1" : host, port);
+        }
+
+        return (trimmed.Trim('[', ']'), defaultPort);
     }
 
     /// <summary>Best-effort local URL to show the user (they still put the tunnel host in front).</summary>
