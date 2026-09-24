@@ -60,9 +60,9 @@ public sealed class TrayController : IDisposable
     private int _aiFailureStreak;
     private bool _aiHealthCheckInFlight;
 
-    private SpHealth _wyomingHealth = SpHealth.Unknown;
-    private int _wyomingFailureStreak;
-    private bool _wyomingHealthCheckInFlight;
+    private SpHealth _whisperLiveHealth = SpHealth.Unknown;
+    private int _whisperLiveFailureStreak;
+    private bool _whisperLiveHealthCheckInFlight;
 
     private UpdateChecker.UpdateInfo? _updateAvailable;
     private bool _updateCheckInFlight;
@@ -79,9 +79,8 @@ public sealed class TrayController : IDisposable
     private IReadOnlyList<SpNamedItem> _ollamaModels = Array.Empty<SpNamedItem>();
     private IReadOnlyList<SpNamedItem> _claudeModels = Array.Empty<SpNamedItem>();
     private IReadOnlyList<SpNamedItem> _geminiModels = Array.Empty<SpNamedItem>();
-    private IReadOnlyList<string> _wyomingDiscoveredModels = Array.Empty<string>();
 
-    private static readonly string[] WyomingStandardModels =
+    private static readonly string[] WhisperLiveStandardModels =
     [
         "tiny",
         "tiny.en",
@@ -95,7 +94,7 @@ public sealed class TrayController : IDisposable
         "large-v3-turbo",
     ];
 
-    private static readonly (string Code, string Name)[] WyomingLanguages =
+    private static readonly (string Code, string Name)[] WhisperLiveLanguages =
     [
         ("en", "English"),
         ("es", "Spanish (Español)"),
@@ -172,7 +171,7 @@ public sealed class TrayController : IDisposable
                 RunBeeperHealthCheckAsync(manual: false),
                 RunTelegramHealthCheckAsync(manual: false),
                 RunAiHealthCheckAsync(manual: false),
-                RunWyomingHealthCheckAsync(manual: false));
+                RunWhisperLiveHealthCheckAsync(manual: false));
         };
         ConfigureHealthTimer();
 
@@ -258,7 +257,7 @@ public sealed class TrayController : IDisposable
         menu.Add(new NativeMenuItem(IntegrationTitle("Google Calendar", _config.GoogleCalendar.Enabled, _googleHealth)) { Menu = BuildGoogleCalendarSubmenu() });
         menu.Add(new NativeMenuItem(IntegrationTitle("Beeper messages", _config.Beeper.Enabled, _beeperHealth)) { Menu = BuildBeeperSubmenu() });
         menu.Add(new NativeMenuItem(IntegrationTitle("Telegram bot", _config.Telegram.Enabled, _telegramHealth)) { Menu = BuildTelegramSubmenu() });
-        menu.Add(new NativeMenuItem(IntegrationTitle("Wyoming transcription", _config.Wyoming.Enabled, _wyomingHealth)) { Menu = BuildWyomingSubmenu() });
+        menu.Add(new NativeMenuItem(IntegrationTitle("WhisperLive transcription", _config.WhisperLive.Enabled, _whisperLiveHealth)) { Menu = BuildWhisperLiveSubmenu() });
         menu.Add(new NativeMenuItem(FeatureTitle("Web search", _config.WebSearch.Enabled)) { Menu = BuildWebSearchSubmenu() });
         menu.Add(new NativeMenuItem(FeatureTitle("Webhook receipt", _config.WebhookReceipt.Enabled)) { Menu = BuildWebhookReceiptSubmenu() });
         menu.Add(new NativeMenuItemSeparator());
@@ -393,15 +392,15 @@ public sealed class TrayController : IDisposable
             line += $"  ·  {ai}";
         }
 
-        if (_config.Wyoming.Enabled)
+        if (_config.WhisperLive.Enabled)
         {
-            var wyoming = _wyomingHealth switch
+            var whisperLive = _whisperLiveHealth switch
             {
-                SpHealth.Ok => "Wyoming reachable",
-                SpHealth.Unreachable => "Wyoming unreachable",
-                _ => "Wyoming not checked yet",
+                SpHealth.Ok => "WhisperLive reachable",
+                SpHealth.Unreachable => "WhisperLive unreachable",
+                _ => "WhisperLive not checked yet",
             };
-            line += $"  ·  {wyoming}";
+            line += $"  ·  {whisperLive}";
         }
 
         return line;
@@ -981,47 +980,63 @@ public sealed class TrayController : IDisposable
         return m;
     }
 
-    private NativeMenu BuildWyomingSubmenu()
+    private NativeMenu BuildWhisperLiveSubmenu()
     {
         var m = new NativeMenu();
-        var cfg = _config.Wyoming;
+        var cfg = _config.WhisperLive;
 
         var enabled = new NativeMenuItem("Enabled")
         {
             ToggleType = NativeMenuItemToggleType.CheckBox,
             IsChecked = cfg.Enabled,
         };
-        enabled.Click += (_, _) => ToggleWyomingEnabled();
+        enabled.Click += (_, _) => ToggleWhisperLiveEnabled();
         m.Add(enabled);
 
-        m.Add(Action("Set server (host:port)…", () => _ = SetWyomingEndpointAsync()));
-        m.Add(new NativeMenuItem("Model") { Menu = BuildWyomingModelSubmenu() });
-        m.Add(new NativeMenuItem("Language") { Menu = BuildWyomingLanguageSubmenu() });
-        m.Add(Action("Test connection", () => _ = RunWyomingHealthCheckAsync(manual: true)));
-        m.Add(Disabled($"Server: {cfg.Host}:{cfg.Port}"));
-        m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.Model) ? "Model: server default" : $"Model: {cfg.Model}"));
+        m.Add(Action("Set server (host:port)…", () => _ = SetWhisperLiveEndpointAsync()));
+
+        var wss = new NativeMenuItem("Use SSL / WSS")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = cfg.UseWss,
+        };
+        wss.Click += (_, _) => ToggleWhisperLiveUseWss();
+        m.Add(wss);
+
+        var vad = new NativeMenuItem("Voice Activity Detection (VAD)")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = cfg.UseVad,
+        };
+        vad.Click += (_, _) => ToggleWhisperLiveUseVad();
+        m.Add(vad);
+
+        m.Add(new NativeMenuItem("Model") { Menu = BuildWhisperLiveModelSubmenu() });
+        m.Add(new NativeMenuItem("Language") { Menu = BuildWhisperLiveLanguageSubmenu() });
+        m.Add(Action("Test connection", () => _ = RunWhisperLiveHealthCheckAsync(manual: true)));
+        m.Add(Disabled($"Server: {(cfg.UseWss ? "wss" : "ws")}://{cfg.Host}:{cfg.Port}"));
+        m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.Model) ? "Model: small (default)" : $"Model: {cfg.Model}"));
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.Language) ? "Language: auto-detect" : $"Language: {cfg.Language}"));
-        m.Add(Disabled("Local Wyoming STT server (wyoming-whisper, wyoming-faster-whisper) — fallback only, when Pebble sends audio but no text"));
+        m.Add(Disabled($"VAD: {(cfg.UseVad ? "enabled" : "disabled")}") );
+        m.Add(Disabled("Local WhisperLive STT server (ghcr.io/collabora/whisperlive-cpu) — fallback only, when Pebble sends audio but no text"));
         return m;
     }
 
-    private NativeMenu BuildWyomingModelSubmenu()
+    private NativeMenu BuildWhisperLiveModelSubmenu()
     {
         var m = new NativeMenu();
-        var current = _config.Wyoming.Model ?? "";
+        var current = _config.WhisperLive.Model ?? "";
 
-        var defaultItem = new NativeMenuItem("(server default)")
+        var defaultItem = new NativeMenuItem("(default: small)")
         {
             ToggleType = NativeMenuItemToggleType.CheckBox,
-            IsChecked = string.IsNullOrWhiteSpace(current),
+            IsChecked = string.IsNullOrWhiteSpace(current) || string.Equals(current, "small", StringComparison.OrdinalIgnoreCase),
         };
-        defaultItem.Click += (_, _) => SetWyomingModel("");
+        defaultItem.Click += (_, _) => SetWhisperLiveModel("");
         m.Add(defaultItem);
         m.Add(new NativeMenuItemSeparator());
 
-        var models = _wyomingDiscoveredModels.Count > 0
-            ? _wyomingDiscoveredModels
-            : WyomingStandardModels;
+        var models = WhisperLiveStandardModels;
 
         var seenCurrent = string.IsNullOrWhiteSpace(current);
         foreach (var model in models)
@@ -1033,7 +1048,7 @@ public sealed class TrayController : IDisposable
                 ToggleType = NativeMenuItemToggleType.CheckBox,
                 IsChecked = isCurrent,
             };
-            item.Click += (_, _) => SetWyomingModel(model);
+            item.Click += (_, _) => SetWhisperLiveModel(model);
             m.Add(item);
         }
 
@@ -1044,31 +1059,31 @@ public sealed class TrayController : IDisposable
                 ToggleType = NativeMenuItemToggleType.CheckBox,
                 IsChecked = true,
             };
-            customCurrentItem.Click += (_, _) => SetWyomingModel(current);
+            customCurrentItem.Click += (_, _) => SetWhisperLiveModel(current);
             m.Add(customCurrentItem);
         }
 
         m.Add(new NativeMenuItemSeparator());
-        m.Add(Action("Custom model name…", () => _ = SetWyomingModelAsync()));
+        m.Add(Action("Custom model name…", () => _ = SetWhisperLiveModelAsync()));
         return m;
     }
 
-    private NativeMenu BuildWyomingLanguageSubmenu()
+    private NativeMenu BuildWhisperLiveLanguageSubmenu()
     {
         var m = new NativeMenu();
-        var current = _config.Wyoming.Language ?? "";
+        var current = _config.WhisperLive.Language ?? "";
 
         var autoItem = new NativeMenuItem("Auto-detect (server default)")
         {
             ToggleType = NativeMenuItemToggleType.CheckBox,
             IsChecked = string.IsNullOrWhiteSpace(current),
         };
-        autoItem.Click += (_, _) => SetWyomingLanguage("");
+        autoItem.Click += (_, _) => SetWhisperLiveLanguage("");
         m.Add(autoItem);
         m.Add(new NativeMenuItemSeparator());
 
         var seenCurrent = string.IsNullOrWhiteSpace(current);
-        foreach (var (code, name) in WyomingLanguages)
+        foreach (var (code, name) in WhisperLiveLanguages)
         {
             var isCurrent = string.Equals(code, current, StringComparison.OrdinalIgnoreCase);
             if (isCurrent) seenCurrent = true;
@@ -1077,7 +1092,7 @@ public sealed class TrayController : IDisposable
                 ToggleType = NativeMenuItemToggleType.CheckBox,
                 IsChecked = isCurrent,
             };
-            item.Click += (_, _) => SetWyomingLanguage(code);
+            item.Click += (_, _) => SetWhisperLiveLanguage(code);
             m.Add(item);
         }
 
@@ -1088,12 +1103,12 @@ public sealed class TrayController : IDisposable
                 ToggleType = NativeMenuItemToggleType.CheckBox,
                 IsChecked = true,
             };
-            customItem.Click += (_, _) => SetWyomingLanguage(current);
+            customItem.Click += (_, _) => SetWhisperLiveLanguage(current);
             m.Add(customItem);
         }
 
         m.Add(new NativeMenuItemSeparator());
-        m.Add(Action("Custom language code…", () => _ = SetWyomingLanguageAsync()));
+        m.Add(Action("Custom language code…", () => _ = SetWhisperLiveLanguageAsync()));
         return m;
     }
 
@@ -1159,7 +1174,7 @@ public sealed class TrayController : IDisposable
             _ = RunBeeperHealthCheckAsync(manual: false);
             _ = RunTelegramHealthCheckAsync(manual: false);
             _ = RunAiHealthCheckAsync(manual: false);
-            _ = RunWyomingHealthCheckAsync(manual: false);
+            _ = RunWhisperLiveHealthCheckAsync(manual: false);
             _ = RefreshListsAsync(notifyOnError: false);
         }
         catch (Exception ex)
@@ -1222,14 +1237,14 @@ public sealed class TrayController : IDisposable
             _beeperHealth = SpHealth.Unknown;
             _telegramHealth = SpHealth.Unknown;
             _aiHealth = SpHealth.Unknown;
-            _wyomingHealth = SpHealth.Unknown;
+            _whisperLiveHealth = SpHealth.Unknown;
             _spFailureStreak = 0;
             _joplinFailureStreak = 0;
             _googleFailureStreak = 0;
             _beeperFailureStreak = 0;
             _telegramFailureStreak = 0;
             _aiFailureStreak = 0;
-            _wyomingFailureStreak = 0;
+            _whisperLiveFailureStreak = 0;
             _captureTag = new CaptureTagResolver(_config.SuperProductivity, _log);
             _classifier.Dispose();
             _classifier = new AiTaskClassifier(_config.AiClassifier, _log);
@@ -1537,30 +1552,25 @@ public sealed class TrayController : IDisposable
         }
     }
 
-    /// <summary>Only runs while Wyoming transcription is enabled.</summary>
-    private async Task RunWyomingHealthCheckAsync(bool manual)
+    /// <summary>Only runs while WhisperLive transcription is enabled.</summary>
+    private async Task RunWhisperLiveHealthCheckAsync(bool manual)
     {
-        if (!_config.Wyoming.Enabled)
+        if (!_config.WhisperLive.Enabled)
         {
-            if (manual) Notify("Wyoming", "Disabled — nothing to test.", NotifyKind.Error, force: true);
+            if (manual) Notify("WhisperLive", "Disabled — nothing to test.", NotifyKind.Error, force: true);
             return;
         }
-        if (!manual && _wyomingHealthCheckInFlight) return;
-        _wyomingHealthCheckInFlight = true;
+        if (!manual && _whisperLiveHealthCheckInFlight) return;
+        _whisperLiveHealthCheckInFlight = true;
         try
         {
             SpHealth state;
             string message;
-            var prevModelsCount = _wyomingDiscoveredModels.Count;
             try
             {
-                using var wyoming = new WyomingClient(_config.Wyoming);
-                message = await wyoming.TestAsync();
+                using var whisperLive = new WhisperLiveClient(_config.WhisperLive);
+                message = await whisperLive.TestAsync();
                 state = SpHealth.Ok;
-                if (wyoming.DiscoveredModels.Count > 0)
-                {
-                    _wyomingDiscoveredModels = wyoming.DiscoveredModels;
-                }
             }
             catch (Exception ex)
             {
@@ -1568,35 +1578,35 @@ public sealed class TrayController : IDisposable
                 state = SpHealth.Unreachable;
             }
 
-            var prev = _wyomingHealth;
-            _wyomingHealth = state;
-            var outage = CrossedOutageThreshold(state, ref _wyomingFailureStreak);
+            var prev = _whisperLiveHealth;
+            _whisperLiveHealth = state;
+            var outage = CrossedOutageThreshold(state, ref _whisperLiveFailureStreak);
 
-            if (state != prev || _wyomingDiscoveredModels.Count != prevModelsCount)
+            if (state != prev)
             {
                 if (state == SpHealth.Ok)
                     _log.Info(prev == SpHealth.Unreachable
-                        ? $"Wyoming connection restored — {message}"
-                        : $"Wyoming reachable — {message}");
+                        ? $"WhisperLive connection restored — {message}"
+                        : $"WhisperLive reachable — {message}");
                 else
-                    _log.Warn($"Wyoming unreachable — {message}");
+                    _log.Warn($"WhisperLive unreachable — {message}");
 
                 RefreshTray();
             }
 
             if (!manual && outage)
             {
-                Notify("Wyoming unreachable", message, NotifyKind.Warning);
-                _ = CreateOutageTaskAsync("Wyoming", message);
+                Notify("WhisperLive unreachable", message, NotifyKind.Warning);
+                _ = CreateOutageTaskAsync("WhisperLive", message);
             }
 
             if (manual)
-                Notify(state == SpHealth.Ok ? "Wyoming" : "Wyoming — not reachable",
+                Notify(state == SpHealth.Ok ? "WhisperLive" : "WhisperLive — not reachable",
                     message, state == SpHealth.Ok ? NotifyKind.Info : NotifyKind.Error, force: true);
         }
         finally
         {
-            _wyomingHealthCheckInFlight = false;
+            _whisperLiveHealthCheckInFlight = false;
         }
     }
 
@@ -1838,7 +1848,7 @@ public sealed class TrayController : IDisposable
             beeperEnabled ? RunBeeperHealthCheckAsync(manual: false) : Task.CompletedTask,
             _config.Telegram.Enabled ? RunTelegramHealthCheckAsync(manual: false) : Task.CompletedTask,
             _config.AiClassifier.Enabled ? RunAiHealthCheckAsync(manual: false) : Task.CompletedTask,
-            _config.Wyoming.Enabled ? RunWyomingHealthCheckAsync(manual: false) : Task.CompletedTask);
+            _config.WhisperLive.Enabled ? RunWhisperLiveHealthCheckAsync(manual: false) : Task.CompletedTask);
 
         var lines = new List<string> { $"Super Productivity: {DescribeHealth(_spHealth)}" };
         var allOk = _spHealth == SpHealth.Ok;
@@ -1873,10 +1883,10 @@ public sealed class TrayController : IDisposable
             allOk &= _aiHealth == SpHealth.Ok;
         }
 
-        if (_config.Wyoming.Enabled)
+        if (_config.WhisperLive.Enabled)
         {
-            lines.Add($"Wyoming: {DescribeHealth(_wyomingHealth)}");
-            allOk &= _wyomingHealth == SpHealth.Ok;
+            lines.Add($"WhisperLive: {DescribeHealth(_whisperLiveHealth)}");
+            allOk &= _whisperLiveHealth == SpHealth.Ok;
         }
 
         Notify(allOk ? "All connections OK" : "Some connections failed",
@@ -2037,21 +2047,6 @@ public sealed class TrayController : IDisposable
                 // exception type exists for it in this codebase, same as its other call sites).
                 _log.Warn($"Couldn't load Gemini models: {ex.Message}");
                 if (notifyOnError) Notify("Couldn't load Gemini models", ex.Message, NotifyKind.Error);
-            }
-        }
-
-        if (_config.Wyoming.Enabled)
-        {
-            try
-            {
-                using var wyoming = new WyomingClient(_config.Wyoming);
-                await wyoming.TestAsync();
-                if (wyoming.DiscoveredModels.Count > 0)
-                    _wyomingDiscoveredModels = wyoming.DiscoveredModels;
-            }
-            catch (Exception ex)
-            {
-                _log.Warn($"Couldn't discover Wyoming models: {ex.Message}");
             }
         }
 
@@ -2354,61 +2349,76 @@ public sealed class TrayController : IDisposable
         SaveConfig("Telegram bot token updated");
     }
 
-    // ---- Wyoming ------------------------------------------------------
+    // ---- WhisperLive --------------------------------------------------
 
-    private void ToggleWyomingEnabled()
+    private void ToggleWhisperLiveEnabled()
     {
-        var cfg = _config.Wyoming;
+        var cfg = _config.WhisperLive;
         cfg.Enabled = !cfg.Enabled;
-        SaveConfig($"Wyoming transcription {(cfg.Enabled ? "enabled" : "disabled")}");
+        SaveConfig($"WhisperLive transcription {(cfg.Enabled ? "enabled" : "disabled")}");
         if (cfg.Enabled)
-            _ = RunWyomingHealthCheckAsync(manual: false);
+            _ = RunWhisperLiveHealthCheckAsync(manual: false);
     }
 
-    private async Task SetWyomingEndpointAsync()
+    private async Task SetWhisperLiveEndpointAsync()
     {
-        var value = await InputDialog.ShowAsync("Wyoming server address",
-            "Enter the host and port of your local Wyoming STT server, e.g. 127.0.0.1:10300 or localhost:10300.\n" +
-            $"Current: {_config.Wyoming.Host}:{_config.Wyoming.Port}", masked: false);
+        var value = await InputDialog.ShowAsync("WhisperLive server address",
+            "Enter the host and port of your local WhisperLive WebSocket server, e.g. 127.0.0.1:9090 or localhost:9090.\n" +
+            $"Current: {_config.WhisperLive.Host}:{_config.WhisperLive.Port}", masked: false);
         if (value is null || value.Trim().Length == 0) return;
 
-        var (host, port) = AppConfig.ParseEndpoint(value.Trim(), _config.Wyoming.Port);
-        _config.Wyoming.Host = host;
-        _config.Wyoming.Port = port;
-        SaveConfig("Wyoming server updated");
-        _ = RunWyomingHealthCheckAsync(manual: false);
+        var (host, port) = AppConfig.ParseEndpoint(value.Trim(), _config.WhisperLive.Port);
+        _config.WhisperLive.Host = host;
+        _config.WhisperLive.Port = port;
+        SaveConfig("WhisperLive server updated");
+        _ = RunWhisperLiveHealthCheckAsync(manual: false);
     }
 
-    private void SetWyomingModel(string model)
+    private void ToggleWhisperLiveUseWss()
     {
-        _config.Wyoming.Model = model;
-        SaveConfig(string.IsNullOrWhiteSpace(model) ? "Wyoming model cleared (server default)" : $"Wyoming model = {model}");
+        var cfg = _config.WhisperLive;
+        cfg.UseWss = !cfg.UseWss;
+        SaveConfig($"WhisperLive WSS {(cfg.UseWss ? "enabled" : "disabled")}");
+        _ = RunWhisperLiveHealthCheckAsync(manual: false);
     }
 
-    private async Task SetWyomingModelAsync()
+    private void ToggleWhisperLiveUseVad()
     {
-        var value = await InputDialog.ShowAsync("Wyoming model",
-            "Model name to request (e.g. tiny, base, small), if your server serves more than one.\n" +
-            "Leave blank to use whatever the server has loaded by default.", masked: false);
+        var cfg = _config.WhisperLive;
+        cfg.UseVad = !cfg.UseVad;
+        SaveConfig($"WhisperLive VAD {(cfg.UseVad ? "enabled" : "disabled")}");
+    }
+
+    private void SetWhisperLiveModel(string model)
+    {
+        _config.WhisperLive.Model = model;
+        SaveConfig(string.IsNullOrWhiteSpace(model) ? "WhisperLive model cleared (server default)" : $"WhisperLive model = {model}");
+    }
+
+    private async Task SetWhisperLiveModelAsync()
+    {
+        var value = await InputDialog.ShowAsync("WhisperLive model",
+            "Model name to request (e.g. small, base, medium, large-v3).\n" +
+            "Leave blank for default (small).", masked: false);
         if (value is null) return;
 
-        SetWyomingModel(value.Trim());
+        SetWhisperLiveModel(value.Trim());
     }
 
-    private void SetWyomingLanguage(string language)
+    private void SetWhisperLiveLanguage(string language)
     {
-        _config.Wyoming.Language = language;
-        SaveConfig(string.IsNullOrWhiteSpace(language) ? "Wyoming language cleared (auto-detect)" : $"Wyoming language = {language}");
+        _config.WhisperLive.Language = language;
+        SaveConfig(string.IsNullOrWhiteSpace(language) ? "WhisperLive language cleared (auto-detect)" : $"WhisperLive language = {language}");
     }
 
-    private async Task SetWyomingLanguageAsync()
+    private async Task SetWhisperLiveLanguageAsync()
     {
-        var value = await InputDialog.ShowAsync("Wyoming language",
+        var value = await InputDialog.ShowAsync("WhisperLive language",
             "Spoken language code to request (e.g. 'en', 'es', 'de').\n" +
-            "Leave blank for automatic language detection or server default.", masked: false);
+            "Leave blank for automatic language detection.", masked: false);
         if (value is null) return;
 
-        SetWyomingLanguage(value.Trim());
+        SetWhisperLiveLanguage(value.Trim());
     }
 
     // ---- Web search -----------------------------------------------------

@@ -67,14 +67,22 @@ public sealed class AppConfig
 
     public BeeperConfig Beeper { get; set; } = new();
  
-    public WyomingConfig Wyoming { get; set; } = new();
+    [JsonPropertyName("whisperLive")]
+    public WhisperLiveConfig WhisperLive { get; set; } = new();
+
+    /// <summary>Backward-compatibility alias for configurations referencing "wyoming".</summary>
+    [JsonPropertyName("wyoming")]
+    public WhisperLiveConfig? LegacyWyoming { get; set; }
 
     /// <summary>Backward-compatibility alias for configurations referencing "whisper".</summary>
     [JsonPropertyName("whisper")]
-    public WyomingConfig? LegacyWhisper { get; set; }
+    public WhisperLiveConfig? LegacyWhisper { get; set; }
 
     [JsonIgnore]
-    public WyomingConfig Whisper => Wyoming;
+    public WhisperLiveConfig Wyoming => WhisperLive;
+
+    [JsonIgnore]
+    public WhisperLiveConfig Whisper => WhisperLive;
 
     public WebSearchConfig WebSearch { get; set; } = new();
 
@@ -143,41 +151,48 @@ public sealed class AppConfig
     /// <summary>
     /// Optional: when Pebble sends a webhook with an audio file but no transcription text (the
     /// case that's normally rejected with a 422), transcribe the audio locally instead of
-    /// dropping it. Connects to a local speech-to-text server implementing the Wyoming protocol
-    /// (wyoming-whisper, wyoming-faster-whisper) over TCP. Never overrides a transcription Pebble
-    /// already sent; only fills in for a genuinely audio-only webhook.
+    /// dropping it. Connects to a local speech-to-text server running Collabora's WhisperLive
+    /// (ghcr.io/collabora/whisperlive-cpu:latest) over WebSocket (ws://host:port). Never overrides
+    /// a transcription Pebble already sent; only fills in for a genuinely audio-only webhook.
     /// </summary>
-    public sealed class WyomingConfig
+    public class WhisperLiveConfig
     {
         public bool Enabled { get; set; } = false;
 
-        /// <summary>Host of the local Wyoming server, e.g. "127.0.0.1" or "127.0.0.1:10300".</summary>
+        /// <summary>Host of the local WhisperLive server, e.g. "127.0.0.1" or "localhost".</summary>
         public string Host { get; set; } = "127.0.0.1";
 
-        /// <summary>TCP port of the Wyoming server (Wyoming Whisper defaults to 10300).</summary>
-        public int Port { get; set; } = 10300;
+        /// <summary>WebSocket port of the WhisperLive server (default is 9090).</summary>
+        public int Port { get; set; } = 9090;
 
-        /// <summary>Model name to request, if your server serves more than one. Blank uses
-        /// whatever the server has loaded by default.</summary>
-        public string Model { get; set; } = "";
+        /// <summary>Whisper model name to request (e.g. "small", "base", "tiny", "medium", "large-v3"). Defaults to "small".</summary>
+        public string Model { get; set; } = "small";
 
-        /// <summary>Spoken language code (e.g. "en") to request. Blank uses the server default / auto-detect.</summary>
+        /// <summary>Spoken language code (e.g. "en", "es", "de") to request. Blank uses auto-detection.</summary>
         public string Language { get; set; } = "";
+
+        /// <summary>Whether to enable Voice Activity Detection (VAD) on the server. Enabled by default.</summary>
+        public bool UseVad { get; set; } = true;
+
+        /// <summary>Whether to use secure WebSocket (wss://) instead of ws://.</summary>
+        public bool UseWss { get; set; } = false;
 
         /// <summary>Seconds to wait for a transcription before giving up and falling back to the
         /// normal audio-only rejection. Transcription is slower than a classify call, so this has
         /// a higher ceiling than the other integrations. Clamped 5–120.</summary>
         public int TimeoutSeconds { get; set; } = 30;
 
-        /// <summary>Backward-compatibility helper that accepts or returns host:port or baseUrl.</summary>
+        /// <summary>Backward-compatibility helper that accepts or returns ws://host:port or baseUrl.</summary>
         [JsonPropertyName("baseUrl")]
         public string? BaseUrl
         {
-            get => $"tcp://{Host}:{Port}";
+            get => $"ws{(UseWss ? "s" : "")}://{Host}:{Port}";
             set
             {
                 if (!string.IsNullOrWhiteSpace(value))
                 {
+                    if (value.StartsWith("wss://", StringComparison.OrdinalIgnoreCase))
+                        UseWss = true;
                     var (h, p) = ParseEndpoint(value, Port);
                     Host = h;
                     Port = p;
@@ -185,6 +200,8 @@ public sealed class AppConfig
             }
         }
     }
+
+    public sealed class WyomingConfig : WhisperLiveConfig { }
 
     /// <summary>
     /// Optional: when the AI classifier decides a transcription is a request to message someone
@@ -467,27 +484,42 @@ public sealed class AppConfig
         Beeper ??= new BeeperConfig();
         Beeper.TimeoutSeconds = Math.Clamp(Beeper.TimeoutSeconds, 2, 30);
         if (string.IsNullOrWhiteSpace(Beeper.BaseUrl)) Beeper.BaseUrl = "http://127.0.0.1:23373";
-        if (LegacyWhisper is not null)
+        if (LegacyWyoming is not null)
         {
-            if (LegacyWhisper.Enabled) Wyoming.Enabled = true;
-            if (!string.IsNullOrWhiteSpace(LegacyWhisper.Host) && LegacyWhisper.Host != "127.0.0.1")
-                Wyoming.Host = LegacyWhisper.Host;
-            if (LegacyWhisper.Port is > 0 and <= 65535 && LegacyWhisper.Port != 10300)
-                Wyoming.Port = LegacyWhisper.Port;
-            if (!string.IsNullOrWhiteSpace(LegacyWhisper.Model))
-                Wyoming.Model = LegacyWhisper.Model;
-            if (!string.IsNullOrWhiteSpace(LegacyWhisper.Language))
-                Wyoming.Language = LegacyWhisper.Language;
-            if (LegacyWhisper.TimeoutSeconds != 30 && LegacyWhisper.TimeoutSeconds != 0)
-                Wyoming.TimeoutSeconds = LegacyWhisper.TimeoutSeconds;
+            if (LegacyWyoming.Enabled) WhisperLive.Enabled = true;
+            if (!string.IsNullOrWhiteSpace(LegacyWyoming.Host) && LegacyWyoming.Host != "127.0.0.1")
+                WhisperLive.Host = LegacyWyoming.Host;
+            if (LegacyWyoming.Port is > 0 and <= 65535 && LegacyWyoming.Port != 9090)
+                WhisperLive.Port = LegacyWyoming.Port;
+            if (!string.IsNullOrWhiteSpace(LegacyWyoming.Model))
+                WhisperLive.Model = LegacyWyoming.Model;
+            if (!string.IsNullOrWhiteSpace(LegacyWyoming.Language))
+                WhisperLive.Language = LegacyWyoming.Language;
+            if (LegacyWyoming.TimeoutSeconds != 30 && LegacyWyoming.TimeoutSeconds != 0)
+                WhisperLive.TimeoutSeconds = LegacyWyoming.TimeoutSeconds;
         }
 
-        Wyoming ??= new WyomingConfig();
-        Wyoming.TimeoutSeconds = Math.Clamp(Wyoming.TimeoutSeconds, 5, 120);
-        if (string.IsNullOrWhiteSpace(Wyoming.Host)) Wyoming.Host = "127.0.0.1";
-        var (wyomingHost, wyomingPort) = ParseEndpoint(Wyoming.Host, Wyoming.Port);
-        Wyoming.Host = wyomingHost;
-        Wyoming.Port = wyomingPort is > 0 and <= 65535 ? wyomingPort : 10300;
+        if (LegacyWhisper is not null)
+        {
+            if (LegacyWhisper.Enabled) WhisperLive.Enabled = true;
+            if (!string.IsNullOrWhiteSpace(LegacyWhisper.Host) && LegacyWhisper.Host != "127.0.0.1")
+                WhisperLive.Host = LegacyWhisper.Host;
+            if (LegacyWhisper.Port is > 0 and <= 65535 && LegacyWhisper.Port != 9090)
+                WhisperLive.Port = LegacyWhisper.Port;
+            if (!string.IsNullOrWhiteSpace(LegacyWhisper.Model))
+                WhisperLive.Model = LegacyWhisper.Model;
+            if (!string.IsNullOrWhiteSpace(LegacyWhisper.Language))
+                WhisperLive.Language = LegacyWhisper.Language;
+            if (LegacyWhisper.TimeoutSeconds != 30 && LegacyWhisper.TimeoutSeconds != 0)
+                WhisperLive.TimeoutSeconds = LegacyWhisper.TimeoutSeconds;
+        }
+
+        WhisperLive ??= new WhisperLiveConfig();
+        WhisperLive.TimeoutSeconds = Math.Clamp(WhisperLive.TimeoutSeconds, 5, 120);
+        if (string.IsNullOrWhiteSpace(WhisperLive.Host)) WhisperLive.Host = "127.0.0.1";
+        var (wlHost, wlPort) = ParseEndpoint(WhisperLive.Host, WhisperLive.Port);
+        WhisperLive.Host = wlHost;
+        WhisperLive.Port = wlPort is > 0 and <= 65535 ? wlPort : 9090;
         WebSearch ??= new WebSearchConfig();
         WebSearch.MaxUses = Math.Clamp(WebSearch.MaxUses, 1, 10);
         WebSearch.SendDelaySeconds = Math.Clamp(WebSearch.SendDelaySeconds, 0, 60);
@@ -501,13 +533,17 @@ public sealed class AppConfig
         SuperProductivity.TagIds ??= new List<string>();
     }
 
-    public static (string Host, int Port) ParseEndpoint(string? endpoint, int defaultPort = 10300)
+    public static (string Host, int Port) ParseEndpoint(string? endpoint, int defaultPort = 9090)
     {
         if (string.IsNullOrWhiteSpace(endpoint))
             return ("127.0.0.1", defaultPort);
 
         var trimmed = endpoint.Trim();
-        if (trimmed.StartsWith("tcp://", StringComparison.OrdinalIgnoreCase))
+        if (trimmed.StartsWith("ws://", StringComparison.OrdinalIgnoreCase))
+            trimmed = trimmed[5..];
+        else if (trimmed.StartsWith("wss://", StringComparison.OrdinalIgnoreCase))
+            trimmed = trimmed[6..];
+        else if (trimmed.StartsWith("tcp://", StringComparison.OrdinalIgnoreCase))
             trimmed = trimmed[6..];
         else if (trimmed.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
             trimmed = trimmed[7..];

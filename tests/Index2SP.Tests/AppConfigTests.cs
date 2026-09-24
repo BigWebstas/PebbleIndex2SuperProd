@@ -131,25 +131,25 @@ public class AppConfigTests : IDisposable
     [Theory]
     [InlineData(1, 5)]
     [InlineData(999, 120)]
-    public void Normalize_ClampsWhisperTimeoutSeconds(int input, int expected)
+    public void Normalize_ClampsWhisperLiveTimeoutSeconds(int input, int expected)
     {
-        File.WriteAllText(ConfigPath, $$"""{ "whisper": { "timeoutSeconds": {{input}} } }""");
+        File.WriteAllText(ConfigPath, $$"""{ "whisperLive": { "timeoutSeconds": {{input}} } }""");
 
         var config = AppConfig.LoadOrCreate(ConfigPath);
 
-        Assert.Equal(expected, config.Whisper.TimeoutSeconds);
+        Assert.Equal(expected, config.WhisperLive.TimeoutSeconds);
     }
 
     [Fact]
-    public void Normalize_DefaultsBlankWyomingEndpoint()
+    public void Normalize_DefaultsBlankWhisperLiveEndpoint()
     {
-        File.WriteAllText(ConfigPath, """{ "wyoming": { "host": "", "port": 0 } }""");
+        File.WriteAllText(ConfigPath, """{ "whisperLive": { "host": "", "port": 0 } }""");
 
         var config = AppConfig.LoadOrCreate(ConfigPath);
 
-        Assert.Equal("127.0.0.1", config.Wyoming.Host);
-        Assert.Equal(10300, config.Wyoming.Port);
-        Assert.Equal("tcp://127.0.0.1:10300", config.Wyoming.BaseUrl);
+        Assert.Equal("127.0.0.1", config.WhisperLive.Host);
+        Assert.Equal(9090, config.WhisperLive.Port);
+        Assert.Equal("ws://127.0.0.1:9090", config.WhisperLive.BaseUrl);
     }
 
     [Fact]
@@ -159,21 +159,35 @@ public class AppConfigTests : IDisposable
 
         var config = AppConfig.LoadOrCreate(ConfigPath);
 
-        Assert.True(config.Wyoming.Enabled);
-        Assert.Equal("192.168.1.50", config.Wyoming.Host);
-        Assert.Equal(10300, config.Wyoming.Port);
-        Assert.Equal("tiny", config.Wyoming.Model);
-        Assert.Equal(45, config.Wyoming.TimeoutSeconds);
+        Assert.True(config.WhisperLive.Enabled);
+        Assert.Equal("192.168.1.50", config.WhisperLive.Host);
+        Assert.Equal(10300, config.WhisperLive.Port);
+        Assert.Equal("tiny", config.WhisperLive.Model);
+        Assert.Equal(45, config.WhisperLive.TimeoutSeconds);
+    }
+
+    [Fact]
+    public void Normalize_MigratesLegacyWyomingConfig()
+    {
+        File.WriteAllText(ConfigPath, """{ "wyoming": { "enabled": true, "host": "192.168.1.60", "port": 10300, "model": "base", "timeoutSeconds": 40 } }""");
+
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.True(config.WhisperLive.Enabled);
+        Assert.Equal("192.168.1.60", config.WhisperLive.Host);
+        Assert.Equal(10300, config.WhisperLive.Port);
+        Assert.Equal("base", config.WhisperLive.Model);
+        Assert.Equal(40, config.WhisperLive.TimeoutSeconds);
     }
 
     [Fact]
     public void ParseEndpoint_HandlesVariousFormats()
     {
-        Assert.Equal(("127.0.0.1", 10300), AppConfig.ParseEndpoint(""));
-        Assert.Equal(("192.168.1.10", 10300), AppConfig.ParseEndpoint("192.168.1.10"));
+        Assert.Equal(("127.0.0.1", 9090), AppConfig.ParseEndpoint(""));
+        Assert.Equal(("192.168.1.10", 9090), AppConfig.ParseEndpoint("192.168.1.10"));
         Assert.Equal(("192.168.1.10", 10400), AppConfig.ParseEndpoint("192.168.1.10:10400"));
-        Assert.Equal(("10.0.0.1", 10300), AppConfig.ParseEndpoint("tcp://10.0.0.1:10300"));
-        Assert.Equal(("localhost", 10300), AppConfig.ParseEndpoint("http://localhost:10300/"));
+        Assert.Equal(("10.0.0.1", 9090), AppConfig.ParseEndpoint("ws://10.0.0.1:9090"));
+        Assert.Equal(("localhost", 9090), AppConfig.ParseEndpoint("http://localhost:9090/"));
     }
 
     [Fact]

@@ -1,3 +1,4 @@
+using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Builder;
@@ -150,28 +151,28 @@ public sealed class WebhookServer : IAsyncDisposable
 
             // Pebble normally transcribes on-device; this only fires for a genuinely audio-only
             // webhook, and never overrides a transcription Pebble already sent.
-            if (string.IsNullOrWhiteSpace(payload.Transcription) && audio is not null && _config.Wyoming.Enabled)
+            if (string.IsNullOrWhiteSpace(payload.Transcription) && audio is not null && _config.WhisperLive.Enabled)
             {
                 try
                 {
                     using var audioBytes = new MemoryStream();
                     await audio.CopyToAsync(audioBytes, ctx.RequestAborted);
-                    using var wyoming = new WyomingClient(_config.Wyoming);
+                    using var whisperLive = new WhisperLiveClient(_config.WhisperLive);
                     var audioMemory = audioBytes.GetBuffer().AsMemory(0, (int)audioBytes.Length);
-                    var text = await wyoming.TranscribeAsync(audioMemory, audio.FileName, ctx.RequestAborted);
+                    var text = await whisperLive.TranscribeAsync(audioMemory, audio.FileName, ctx.RequestAborted);
                     if (text is not null)
                     {
-                        _log.Info($"Wyoming transcribed audio from {remote} ({audioBytes.Length} bytes): {text.Length} chars");
+                        _log.Info($"WhisperLive transcribed audio from {remote} ({audioBytes.Length} bytes): {text.Length} chars");
                         payload = payload with { Transcription = text };
                     }
                     else
                     {
-                        _log.Warn("Wyoming returned no usable text — falling back to normal handling");
+                        _log.Warn("WhisperLive returned no usable text — falling back to normal handling");
                     }
                 }
-                catch (Exception ex) when (ex is WyomingApiException or WyomingAudioException or System.Net.Sockets.SocketException or IOException or TaskCanceledException)
+                catch (Exception ex) when (ex is WhisperLiveApiException or WhisperLiveAudioException or WebSocketException or IOException or TaskCanceledException)
                 {
-                    _log.Warn($"Wyoming transcription failed, falling back to normal handling: {ex.Message}");
+                    _log.Warn($"WhisperLive transcription failed, falling back to normal handling: {ex.Message}");
                 }
             }
         }

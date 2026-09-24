@@ -156,7 +156,7 @@ public static class AudioDecoder
     {
         if (!IsFfmpegAvailable)
         {
-            throw new WyomingAudioException(
+            throw new WhisperLiveAudioException(
                 $"Audio format '{(string.IsNullOrEmpty(fileName) ? "unknown" : Path.GetExtension(fileName))}' requires ffmpeg to decode to PCM, but ffmpeg was not found on PATH. Please install ffmpeg or supply uncompressed WAV audio.");
         }
 
@@ -185,7 +185,7 @@ public static class AudioDecoder
             if (pcm.Length > 0)
                 return new DecodedAudio(pcm, Rate: 16000, Width: 2, Channels: 1);
 
-            throw new WyomingAudioException("ffmpeg produced empty PCM audio when decoding.");
+            throw new WhisperLiveAudioException("ffmpeg produced empty PCM audio when decoding.");
         }
         finally
         {
@@ -212,12 +212,12 @@ public static class AudioDecoder
         try
         {
             proc = Process.Start(psi)
-                   ?? throw new WyomingAudioException("Failed to launch ffmpeg process.");
+                   ?? throw new WhisperLiveAudioException("Failed to launch ffmpeg process.");
         }
         catch (System.ComponentModel.Win32Exception ex)
         {
             _isFfmpegAvailable = false;
-            throw new WyomingAudioException(
+            throw new WhisperLiveAudioException(
                 "ffmpeg was not found on PATH. An external decoder (ffmpeg) is required to transcribe compressed audio formats such as .m4a. Please install ffmpeg or supply uncompressed WAV audio.", ex);
         }
 

@@ -58,12 +58,14 @@
     "apiToken": "paste-a-personal-access-token-from-Beeper-Desktop-API-settings",
     "timeoutSeconds": 8
   },
-  "wyoming": {
+  "whisperLive": {
     "enabled": false,
     "host": "127.0.0.1",
-    "port": 10300,
-    "model": "",
+    "port": 9090,
+    "model": "small",
     "language": "",
+    "useVad": true,
+    "useWss": false,
     "timeoutSeconds": 30
   },
   "webSearch": {
