@@ -79,6 +79,38 @@ public sealed class TrayController : IDisposable
     private IReadOnlyList<SpNamedItem> _ollamaModels = Array.Empty<SpNamedItem>();
     private IReadOnlyList<SpNamedItem> _claudeModels = Array.Empty<SpNamedItem>();
     private IReadOnlyList<SpNamedItem> _geminiModels = Array.Empty<SpNamedItem>();
+    private IReadOnlyList<string> _wyomingDiscoveredModels = Array.Empty<string>();
+
+    private static readonly string[] WyomingStandardModels =
+    [
+        "tiny",
+        "tiny.en",
+        "base",
+        "base.en",
+        "small",
+        "small.en",
+        "medium",
+        "medium.en",
+        "large-v3",
+        "large-v3-turbo",
+    ];
+
+    private static readonly (string Code, string Name)[] WyomingLanguages =
+    [
+        ("en", "English"),
+        ("es", "Spanish (Español)"),
+        ("de", "German (Deutsch)"),
+        ("fr", "French (Français)"),
+        ("it", "Italian (Italiano)"),
+        ("pt", "Portuguese (Português)"),
+        ("nl", "Dutch (Nederlands)"),
+        ("ru", "Russian (Русский)"),
+        ("zh", "Chinese (中文)"),
+        ("ja", "Japanese (日本語)"),
+        ("ko", "Korean (한국어)"),
+        ("pl", "Polish (Polski)"),
+        ("uk", "Ukrainian (Українська)"),
+    ];
 
     private static readonly (string Id, string Label)[] AiModels =
     [
@@ -220,15 +252,15 @@ public sealed class TrayController : IDisposable
         menu.Add(Action("Refresh projects, tags & notebooks", () => _ = RefreshListsAsync(notifyOnError: true)));
         menu.Add(new NativeMenuItemSeparator());
 
-        menu.Add(new NativeMenuItem("Super Productivity") { Menu = BuildSuperProductivitySubmenu() });
-        menu.Add(new NativeMenuItem("AI classifier") { Menu = BuildAiClassifierSubmenu() });
-        menu.Add(new NativeMenuItem("Joplin notes") { Menu = BuildJoplinSubmenu() });
-        menu.Add(new NativeMenuItem("Google Calendar") { Menu = BuildGoogleCalendarSubmenu() });
-        menu.Add(new NativeMenuItem("Beeper messages") { Menu = BuildBeeperSubmenu() });
-        menu.Add(new NativeMenuItem("Telegram bot") { Menu = BuildTelegramSubmenu() });
-        menu.Add(new NativeMenuItem("Wyoming transcription") { Menu = BuildWyomingSubmenu() });
-        menu.Add(new NativeMenuItem("Web search") { Menu = BuildWebSearchSubmenu() });
-        menu.Add(new NativeMenuItem("Webhook receipt") { Menu = BuildWebhookReceiptSubmenu() });
+        menu.Add(new NativeMenuItem(SpSubmenuTitle()) { Menu = BuildSuperProductivitySubmenu() });
+        menu.Add(new NativeMenuItem(IntegrationTitle("AI classifier", _config.AiClassifier.Enabled, _aiHealth)) { Menu = BuildAiClassifierSubmenu() });
+        menu.Add(new NativeMenuItem(IntegrationTitle("Joplin notes", _config.Joplin.Enabled, _joplinHealth)) { Menu = BuildJoplinSubmenu() });
+        menu.Add(new NativeMenuItem(IntegrationTitle("Google Calendar", _config.GoogleCalendar.Enabled, _googleHealth)) { Menu = BuildGoogleCalendarSubmenu() });
+        menu.Add(new NativeMenuItem(IntegrationTitle("Beeper messages", _config.Beeper.Enabled, _beeperHealth)) { Menu = BuildBeeperSubmenu() });
+        menu.Add(new NativeMenuItem(IntegrationTitle("Telegram bot", _config.Telegram.Enabled, _telegramHealth)) { Menu = BuildTelegramSubmenu() });
+        menu.Add(new NativeMenuItem(IntegrationTitle("Wyoming transcription", _config.Wyoming.Enabled, _wyomingHealth)) { Menu = BuildWyomingSubmenu() });
+        menu.Add(new NativeMenuItem(FeatureTitle("Web search", _config.WebSearch.Enabled)) { Menu = BuildWebSearchSubmenu() });
+        menu.Add(new NativeMenuItem(FeatureTitle("Webhook receipt", _config.WebhookReceipt.Enabled)) { Menu = BuildWebhookReceiptSubmenu() });
         menu.Add(new NativeMenuItemSeparator());
 
         menu.Add(Action("Edit config…", OpenConfig));
@@ -264,6 +296,27 @@ public sealed class TrayController : IDisposable
 
         _tray.Menu = menu;
     }
+
+    private string SpSubmenuTitle() => _spHealth switch
+    {
+        SpHealth.Ok => "Super Productivity (OK)",
+        SpHealth.Unreachable => "Super Productivity (Unreachable)",
+        _ => "Super Productivity",
+    };
+
+    private static string IntegrationTitle(string name, bool enabled, SpHealth health)
+    {
+        if (!enabled) return $"{name} (Disabled)";
+        return health switch
+        {
+            SpHealth.Ok => $"{name} (OK)",
+            SpHealth.Unreachable => $"{name} (Unreachable)",
+            _ => name,
+        };
+    }
+
+    private static string FeatureTitle(string name, bool enabled) =>
+        enabled ? name : $"{name} (Disabled)";
 
     private static NativeMenuItem Disabled(string header) => new(header) { IsEnabled = false };
 
@@ -942,14 +995,105 @@ public sealed class TrayController : IDisposable
         m.Add(enabled);
 
         m.Add(Action("Set server (host:port)…", () => _ = SetWyomingEndpointAsync()));
-        m.Add(Action("Set model…", () => _ = SetWyomingModelAsync()));
-        m.Add(Action("Set language…", () => _ = SetWyomingLanguageAsync()));
+        m.Add(new NativeMenuItem("Model") { Menu = BuildWyomingModelSubmenu() });
+        m.Add(new NativeMenuItem("Language") { Menu = BuildWyomingLanguageSubmenu() });
         m.Add(Action("Test connection", () => _ = RunWyomingHealthCheckAsync(manual: true)));
         m.Add(Disabled($"Server: {cfg.Host}:{cfg.Port}"));
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.Model) ? "Model: server default" : $"Model: {cfg.Model}"));
-        if (!string.IsNullOrWhiteSpace(cfg.Language))
-            m.Add(Disabled($"Language: {cfg.Language}"));
+        m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.Language) ? "Language: auto-detect" : $"Language: {cfg.Language}"));
         m.Add(Disabled("Local Wyoming STT server (wyoming-whisper, wyoming-faster-whisper) — fallback only, when Pebble sends audio but no text"));
+        return m;
+    }
+
+    private NativeMenu BuildWyomingModelSubmenu()
+    {
+        var m = new NativeMenu();
+        var current = _config.Wyoming.Model ?? "";
+
+        var defaultItem = new NativeMenuItem("(server default)")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = string.IsNullOrWhiteSpace(current),
+        };
+        defaultItem.Click += (_, _) => SetWyomingModel("");
+        m.Add(defaultItem);
+        m.Add(new NativeMenuItemSeparator());
+
+        var models = _wyomingDiscoveredModels.Count > 0
+            ? _wyomingDiscoveredModels
+            : WyomingStandardModels;
+
+        var seenCurrent = string.IsNullOrWhiteSpace(current);
+        foreach (var model in models)
+        {
+            var isCurrent = string.Equals(model, current, StringComparison.OrdinalIgnoreCase);
+            if (isCurrent) seenCurrent = true;
+            var item = new NativeMenuItem(model)
+            {
+                ToggleType = NativeMenuItemToggleType.CheckBox,
+                IsChecked = isCurrent,
+            };
+            item.Click += (_, _) => SetWyomingModel(model);
+            m.Add(item);
+        }
+
+        if (!seenCurrent && !string.IsNullOrWhiteSpace(current))
+        {
+            var customCurrentItem = new NativeMenuItem($"{current} (custom)")
+            {
+                ToggleType = NativeMenuItemToggleType.CheckBox,
+                IsChecked = true,
+            };
+            customCurrentItem.Click += (_, _) => SetWyomingModel(current);
+            m.Add(customCurrentItem);
+        }
+
+        m.Add(new NativeMenuItemSeparator());
+        m.Add(Action("Custom model name…", () => _ = SetWyomingModelAsync()));
+        return m;
+    }
+
+    private NativeMenu BuildWyomingLanguageSubmenu()
+    {
+        var m = new NativeMenu();
+        var current = _config.Wyoming.Language ?? "";
+
+        var autoItem = new NativeMenuItem("Auto-detect (server default)")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = string.IsNullOrWhiteSpace(current),
+        };
+        autoItem.Click += (_, _) => SetWyomingLanguage("");
+        m.Add(autoItem);
+        m.Add(new NativeMenuItemSeparator());
+
+        var seenCurrent = string.IsNullOrWhiteSpace(current);
+        foreach (var (code, name) in WyomingLanguages)
+        {
+            var isCurrent = string.Equals(code, current, StringComparison.OrdinalIgnoreCase);
+            if (isCurrent) seenCurrent = true;
+            var item = new NativeMenuItem($"{name} ({code})")
+            {
+                ToggleType = NativeMenuItemToggleType.CheckBox,
+                IsChecked = isCurrent,
+            };
+            item.Click += (_, _) => SetWyomingLanguage(code);
+            m.Add(item);
+        }
+
+        if (!seenCurrent && !string.IsNullOrWhiteSpace(current))
+        {
+            var customItem = new NativeMenuItem($"{current} (custom)")
+            {
+                ToggleType = NativeMenuItemToggleType.CheckBox,
+                IsChecked = true,
+            };
+            customItem.Click += (_, _) => SetWyomingLanguage(current);
+            m.Add(customItem);
+        }
+
+        m.Add(new NativeMenuItemSeparator());
+        m.Add(Action("Custom language code…", () => _ = SetWyomingLanguageAsync()));
         return m;
     }
 
@@ -1407,11 +1551,16 @@ public sealed class TrayController : IDisposable
         {
             SpHealth state;
             string message;
+            var prevModelsCount = _wyomingDiscoveredModels.Count;
             try
             {
                 using var wyoming = new WyomingClient(_config.Wyoming);
                 message = await wyoming.TestAsync();
                 state = SpHealth.Ok;
+                if (wyoming.DiscoveredModels.Count > 0)
+                {
+                    _wyomingDiscoveredModels = wyoming.DiscoveredModels;
+                }
             }
             catch (Exception ex)
             {
@@ -1423,7 +1572,7 @@ public sealed class TrayController : IDisposable
             _wyomingHealth = state;
             var outage = CrossedOutageThreshold(state, ref _wyomingFailureStreak);
 
-            if (state != prev)
+            if (state != prev || _wyomingDiscoveredModels.Count != prevModelsCount)
             {
                 if (state == SpHealth.Ok)
                     _log.Info(prev == SpHealth.Unreachable
@@ -1891,6 +2040,21 @@ public sealed class TrayController : IDisposable
             }
         }
 
+        if (_config.Wyoming.Enabled)
+        {
+            try
+            {
+                using var wyoming = new WyomingClient(_config.Wyoming);
+                await wyoming.TestAsync();
+                if (wyoming.DiscoveredModels.Count > 0)
+                    _wyomingDiscoveredModels = wyoming.DiscoveredModels;
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Couldn't discover Wyoming models: {ex.Message}");
+            }
+        }
+
         RebuildMenu();
     }
 
@@ -2197,6 +2361,8 @@ public sealed class TrayController : IDisposable
         var cfg = _config.Wyoming;
         cfg.Enabled = !cfg.Enabled;
         SaveConfig($"Wyoming transcription {(cfg.Enabled ? "enabled" : "disabled")}");
+        if (cfg.Enabled)
+            _ = RunWyomingHealthCheckAsync(manual: false);
     }
 
     private async Task SetWyomingEndpointAsync()
@@ -2213,6 +2379,12 @@ public sealed class TrayController : IDisposable
         _ = RunWyomingHealthCheckAsync(manual: false);
     }
 
+    private void SetWyomingModel(string model)
+    {
+        _config.Wyoming.Model = model;
+        SaveConfig(string.IsNullOrWhiteSpace(model) ? "Wyoming model cleared (server default)" : $"Wyoming model = {model}");
+    }
+
     private async Task SetWyomingModelAsync()
     {
         var value = await InputDialog.ShowAsync("Wyoming model",
@@ -2220,8 +2392,13 @@ public sealed class TrayController : IDisposable
             "Leave blank to use whatever the server has loaded by default.", masked: false);
         if (value is null) return;
 
-        _config.Wyoming.Model = value.Trim();
-        SaveConfig(string.IsNullOrWhiteSpace(value) ? "Wyoming model cleared (server default)" : "Wyoming model updated");
+        SetWyomingModel(value.Trim());
+    }
+
+    private void SetWyomingLanguage(string language)
+    {
+        _config.Wyoming.Language = language;
+        SaveConfig(string.IsNullOrWhiteSpace(language) ? "Wyoming language cleared (auto-detect)" : $"Wyoming language = {language}");
     }
 
     private async Task SetWyomingLanguageAsync()
@@ -2231,8 +2408,7 @@ public sealed class TrayController : IDisposable
             "Leave blank for automatic language detection or server default.", masked: false);
         if (value is null) return;
 
-        _config.Wyoming.Language = value.Trim();
-        SaveConfig(string.IsNullOrWhiteSpace(value) ? "Wyoming language cleared (auto-detect)" : "Wyoming language updated");
+        SetWyomingLanguage(value.Trim());
     }
 
     // ---- Web search -----------------------------------------------------

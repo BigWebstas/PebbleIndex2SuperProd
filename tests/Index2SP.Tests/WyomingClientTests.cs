@@ -42,13 +42,82 @@ public class WyomingClientTests
     [Fact]
     public void TryReadPcmWav_RejectsNonPcmWav()
     {
-        // Format 3 == IEEE Float
-        var wav = CreateWavBytes(new byte[8], 16000, 1, 32, audioFormat: 3);
+        // Format 6 == A-law, Format 7 == Mu-law (unsupported non-PCM/float format)
+        var wav = CreateWavBytes(new byte[8], 16000, 1, 8, audioFormat: 6);
 
         var success = AudioDecoder.TryReadPcmWav(wav, out var decoded);
 
         Assert.False(success);
         Assert.Null(decoded.Data);
+    }
+
+    [Fact]
+    public void TryReadPcmWav_Parses32BitFloatWav()
+    {
+        // 4 float samples: 0.0f, 1.0f, -1.0f, 0.5f
+        var floats = new float[] { 0.0f, 1.0f, -1.0f, 0.5f };
+        var floatBytes = new byte[floats.Length * sizeof(float)];
+        Buffer.BlockCopy(floats, 0, floatBytes, 0, floatBytes.Length);
+
+        // Format 3 == IEEE Float 32-bit
+        var wav = CreateWavBytes(floatBytes, 16000, 1, 32, audioFormat: 3);
+
+        var success = AudioDecoder.TryReadPcmWav(wav, out var decoded);
+
+        Assert.True(success);
+        Assert.NotNull(decoded.Data);
+        Assert.Equal(16000, decoded.Rate);
+        Assert.Equal(2, decoded.Width); // converted to 16-bit PCM
+        Assert.Equal(1, decoded.Channels);
+        Assert.Equal(floats.Length * 2, decoded.Data.Length);
+
+        // Verify converted samples: 0, 32767, -32768, ~16384
+        var s0 = BitConverter.ToInt16(decoded.Data, 0);
+        var s1 = BitConverter.ToInt16(decoded.Data, 2);
+        var s2 = BitConverter.ToInt16(decoded.Data, 4);
+        var s3 = BitConverter.ToInt16(decoded.Data, 6);
+
+        Assert.Equal(0, s0);
+        Assert.Equal(32767, s1);
+        Assert.Equal(-32768, s2);
+        Assert.InRange(s3, 16380, 16388);
+    }
+
+    [Fact]
+    public async Task WyomingStreamReader_ReadsMultipleEventsInSingleBuffer()
+    {
+        using var ms = new MemoryStream();
+
+        // Write three events into the stream
+        await WyomingProtocol.WriteEventAsync(ms, "event-one", new { key = "val1" }, CancellationToken.None);
+        await WyomingProtocol.WriteEventAsync(ms, "event-two", new { key = "val2" }, new byte[] { 1, 2, 3, 4 }, CancellationToken.None);
+        await WyomingProtocol.WriteEventAsync(ms, "event-three", new { key = "val3" }, CancellationToken.None);
+
+        ms.Position = 0;
+
+        using var reader = new WyomingStreamReader(ms);
+
+        var e1 = await reader.ReadEventAsync(CancellationToken.None);
+        Assert.NotNull(e1);
+        Assert.Equal("event-one", e1.Type);
+        Assert.Equal("val1", e1.Data?.GetProperty("key").GetString());
+        Assert.Null(e1.Payload);
+
+        var e2 = await reader.ReadEventAsync(CancellationToken.None);
+        Assert.NotNull(e2);
+        Assert.Equal("event-two", e2.Type);
+        Assert.Equal("val2", e2.Data?.GetProperty("key").GetString());
+        Assert.NotNull(e2.Payload);
+        Assert.Equal(new byte[] { 1, 2, 3, 4 }, e2.Payload);
+
+        var e3 = await reader.ReadEventAsync(CancellationToken.None);
+        Assert.NotNull(e3);
+        Assert.Equal("event-three", e3.Type);
+        Assert.Equal("val3", e3.Data?.GetProperty("key").GetString());
+        Assert.Null(e3.Payload);
+
+        var e4 = await reader.ReadEventAsync(CancellationToken.None);
+        Assert.Null(e4); // EOF
     }
 
     [Fact]
@@ -115,6 +184,71 @@ public class WyomingClientTests
 
             Assert.Contains("faster-whisper-medium", result);
             Assert.Contains("OK", result);
+            Assert.Contains("ms", result);
+            Assert.Single(wyoming.DiscoveredModels);
+            Assert.Equal("faster-whisper-medium", wyoming.DiscoveredModels[0]);
+        }
+        finally
+        {
+            listener.Stop();
+            await serverTask;
+        }
+    }
+
+    [Fact]
+    public async Task TestAsync_PopulatesNestedDiscoveredModelsAndMeasuresLatency()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+
+        var serverTask = Task.Run(async () =>
+        {
+            using var client = await listener.AcceptTcpClientAsync();
+            using var stream = client.GetStream();
+            using var buffered = new BufferedStream(stream);
+
+            var describeEv = await WyomingProtocol.ReadEventAsync(buffered, CancellationToken.None);
+            Assert.NotNull(describeEv);
+            Assert.Equal("describe", describeEv.Type);
+
+            var infoData = new
+            {
+                asr = new object[]
+                {
+                    new
+                    {
+                        name = "whisper",
+                        models = new[]
+                        {
+                            new { name = "tiny.en" },
+                            new { name = "base.en" }
+                        }
+                    }
+                }
+            };
+            await WyomingProtocol.WriteEventAsync(buffered, "info", infoData, null, CancellationToken.None);
+        });
+
+        try
+        {
+            var config = new AppConfig.WyomingConfig
+            {
+                Host = "127.0.0.1",
+                Port = port,
+                TimeoutSeconds = 5,
+            };
+
+            using var wyoming = new WyomingClient(config);
+            var result = await wyoming.TestAsync(CancellationToken.None);
+
+            Assert.Contains("OK", result);
+            Assert.Contains("ms", result);
+            Assert.Contains("tiny.en", result);
+            Assert.Contains("base.en", result);
+            Assert.Equal(2, wyoming.DiscoveredModels.Count);
+            Assert.Contains("tiny.en", wyoming.DiscoveredModels);
+            Assert.Contains("base.en", wyoming.DiscoveredModels);
         }
         finally
         {

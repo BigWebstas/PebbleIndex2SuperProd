@@ -155,9 +155,10 @@ public sealed class WebhookServer : IAsyncDisposable
                 try
                 {
                     using var audioBytes = new MemoryStream();
-                    await audio.CopyToAsync(audioBytes, CancellationToken.None);
+                    await audio.CopyToAsync(audioBytes, ctx.RequestAborted);
                     using var wyoming = new WyomingClient(_config.Wyoming);
-                    var text = await wyoming.TranscribeAsync(audioBytes.ToArray(), audio.FileName, CancellationToken.None);
+                    var audioMemory = audioBytes.GetBuffer().AsMemory(0, (int)audioBytes.Length);
+                    var text = await wyoming.TranscribeAsync(audioMemory, audio.FileName, ctx.RequestAborted);
                     if (text is not null)
                     {
                         _log.Info($"Wyoming transcribed audio from {remote} ({audioBytes.Length} bytes): {text.Length} chars");

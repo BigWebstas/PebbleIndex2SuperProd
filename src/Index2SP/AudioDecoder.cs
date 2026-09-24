@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace Index2SP;
 
@@ -16,13 +17,55 @@ public static class AudioDecoder
     private static readonly byte[] FmtChunk = "fmt "u8.ToArray();
     private static readonly byte[] DataChunk = "data"u8.ToArray();
 
-    public static async Task<DecodedAudio> DecodeAsync(byte[] audio, string? fileName, CancellationToken ct = default)
+    private static bool? _isFfmpegAvailable;
+
+    /// <summary>
+    /// Checks whether ffmpeg is available on the system PATH.
+    /// </summary>
+    public static bool IsFfmpegAvailable
     {
-        if (audio == null || audio.Length == 0)
+        get
+        {
+            if (_isFfmpegAvailable.HasValue) return _isFfmpegAvailable.Value;
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "ffmpeg",
+                    Arguments = "-version",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                };
+                using var p = Process.Start(psi);
+                if (p != null)
+                {
+                    p.WaitForExit(1500);
+                    _isFfmpegAvailable = p.ExitCode == 0;
+                    return _isFfmpegAvailable.Value;
+                }
+            }
+            catch
+            {
+                // Process failed to start
+            }
+
+            _isFfmpegAvailable = false;
+            return false;
+        }
+    }
+
+    public static Task<DecodedAudio> DecodeAsync(byte[] audio, string? fileName, CancellationToken ct = default) =>
+        DecodeAsync(audio.AsMemory(), fileName, ct);
+
+    public static async Task<DecodedAudio> DecodeAsync(ReadOnlyMemory<byte> audio, string? fileName, CancellationToken ct = default)
+    {
+        if (audio.IsEmpty)
             throw new ArgumentException("Audio buffer is empty.", nameof(audio));
 
-        // 1. If it's already an uncompressed PCM WAV, extract the PCM bytes directly without external tools.
-        if (TryReadPcmWav(audio, out var wavAudio))
+        // 1. If it's already an uncompressed PCM or IEEE float WAV, extract/convert the PCM bytes directly without external tools.
+        if (TryReadPcmWav(audio.Span, out var wavAudio))
         {
             return wavAudio;
         }
@@ -33,6 +76,7 @@ public static class AudioDecoder
 
     /// <summary>
     /// Parses a standard RIFF/WAVE header and extracts raw PCM bytes, sample rate, width, and channel count.
+    /// Supports both integer PCM (Format 1) and 32-bit IEEE Float (Format 3).
     /// </summary>
     public static bool TryReadPcmWav(ReadOnlySpan<byte> bytes, out DecodedAudio audio)
     {
@@ -77,7 +121,7 @@ public static class AudioDecoder
             idx = nextIdx;
         }
 
-        // AudioFormat 1 == Linear PCM
+        // Format 1 == Linear PCM
         if (audioFormat == 1 && channels > 0 && sampleRate > 0 && bitsPerSample is 8 or 16 or 24 or 32 && dataOffset >= 0 && dataLength > 0)
         {
             var pcm = bytes.Slice(dataOffset, dataLength).ToArray();
@@ -85,11 +129,37 @@ public static class AudioDecoder
             return true;
         }
 
+        // Format 3 == IEEE Float (32-bit float -> convert to 16-bit PCM in memory)
+        if (audioFormat == 3 && channels > 0 && sampleRate > 0 && bitsPerSample == 32 && dataOffset >= 0 && dataLength > 0)
+        {
+            var sampleCount = dataLength / 4;
+            var pcm = new byte[sampleCount * 2];
+            var floatSpan = MemoryMarshal.Cast<byte, float>(bytes.Slice(dataOffset, sampleCount * 4));
+            var shortSpan = MemoryMarshal.Cast<byte, short>(pcm);
+
+            for (int i = 0; i < floatSpan.Length; i++)
+            {
+                var clamped = Math.Clamp(floatSpan[i], -1.0f, 1.0f);
+                shortSpan[i] = clamped < 0
+                    ? (short)Math.Clamp(clamped * 32768f, -32768f, 32767f)
+                    : (short)(clamped * 32767f);
+            }
+
+            audio = new DecodedAudio(pcm, Rate: sampleRate, Width: 2, Channels: channels);
+            return true;
+        }
+
         return false;
     }
 
-    private static async Task<DecodedAudio> DecodeWithFfmpegAsync(byte[] audio, string? fileName, CancellationToken ct)
+    private static async Task<DecodedAudio> DecodeWithFfmpegAsync(ReadOnlyMemory<byte> audio, string? fileName, CancellationToken ct)
     {
+        if (!IsFfmpegAvailable)
+        {
+            throw new WyomingAudioException(
+                $"Audio format '{(string.IsNullOrEmpty(fileName) ? "unknown" : Path.GetExtension(fileName))}' requires ffmpeg to decode to PCM, but ffmpeg was not found on PATH. Please install ffmpeg or supply uncompressed WAV audio.");
+        }
+
         // Attempt 1: Stream directly via pipe:0 -> pipe:1
         try
         {
@@ -97,7 +167,7 @@ public static class AudioDecoder
             if (pcm.Length > 0)
                 return new DecodedAudio(pcm, Rate: 16000, Width: 2, Channels: 1);
         }
-        catch (Exception ex) when (ex is not System.ComponentModel.Win32Exception && ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // Some MP4/M4A files have the moov atom at the end, which requires seeking and cannot be piped through pipe:0.
             // Fall back to writing a temporary file.
@@ -110,7 +180,7 @@ public static class AudioDecoder
 
         try
         {
-            await File.WriteAllBytesAsync(tempFile, audio, ct);
+            await File.WriteAllBytesAsync(tempFile, audio.ToArray(), ct);
             var pcm = await RunFfmpegAsync(["-loglevel", "error", "-i", tempFile, "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1", "-ar", "16000", "pipe:1"], null, ct);
             if (pcm.Length > 0)
                 return new DecodedAudio(pcm, Rate: 16000, Width: 2, Channels: 1);
@@ -123,13 +193,13 @@ public static class AudioDecoder
         }
     }
 
-    private static async Task<byte[]> RunFfmpegAsync(string[] arguments, byte[]? stdinData, CancellationToken ct)
+    private static async Task<byte[]> RunFfmpegAsync(string[] arguments, ReadOnlyMemory<byte>? stdinData, CancellationToken ct)
     {
         var psi = new ProcessStartInfo
         {
             FileName = "ffmpeg",
             UseShellExecute = false,
-            RedirectStandardInput = stdinData is not null,
+            RedirectStandardInput = stdinData.HasValue,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
@@ -146,6 +216,7 @@ public static class AudioDecoder
         }
         catch (System.ComponentModel.Win32Exception ex)
         {
+            _isFfmpegAvailable = false;
             throw new WyomingAudioException(
                 "ffmpeg was not found on PATH. An external decoder (ffmpeg) is required to transcribe compressed audio formats such as .m4a. Please install ffmpeg or supply uncompressed WAV audio.", ex);
         }
@@ -159,13 +230,13 @@ public static class AudioDecoder
             var stderrTask = proc.StandardError.BaseStream.CopyToAsync(stderrStream, ct);
             Task stdinTask = Task.CompletedTask;
 
-            if (stdinData is not null)
+            if (stdinData.HasValue)
             {
                 stdinTask = Task.Run(async () =>
                 {
                     try
                     {
-                        await proc.StandardInput.BaseStream.WriteAsync(stdinData, ct);
+                        await proc.StandardInput.BaseStream.WriteAsync(stdinData.Value, ct);
                         await proc.StandardInput.BaseStream.FlushAsync(ct);
                     }
                     catch (IOException)
