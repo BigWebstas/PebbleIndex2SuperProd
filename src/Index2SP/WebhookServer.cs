@@ -238,8 +238,8 @@ public sealed class WebhookServer : IAsyncDisposable
         // task, cancelling here would make us re-queue it and create a duplicate on retry. The
         // HTTP client's own 15 s timeout bounds the call.
         var routing = new AiRoutingResult(null, false);
-        if (_config.AiClassifier.Enabled)
-            routing = await ApplyAiClassificationAsync(sp, taskReq, payload.Transcription!, payload.RecordedAt);
+        if (_config.AiClassifier.Enabled && !string.IsNullOrWhiteSpace(payload.Transcription))
+            routing = await ApplyAiClassificationAsync(sp, taskReq, payload.Transcription, payload.RecordedAt);
         var shoppingItems = routing.ShoppingItems;
 
         await SendWebhookReceiptAsync(routing.CaptureKind);

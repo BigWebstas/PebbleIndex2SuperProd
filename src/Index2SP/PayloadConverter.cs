@@ -14,13 +14,27 @@ public static class PayloadConverter
     public static SpTaskRequest ToTask(PebblePayload payload, AppConfig config)
     {
         var transcription = (payload.Transcription ?? string.Empty).Trim();
+        var isAudioFallback = false;
 
         if (transcription.Length == 0)
         {
-            // "audio only" webhook, or transcription failed. We have nothing to name a task.
-            throw new ConversionException(
-                "payload has no transcription text (webhook is likely set to 'audio only', " +
-                "or transcription failed) — nothing to create a task from");
+            if (payload.HasAudio && config.AudioOnlyFallback)
+            {
+                isAudioFallback = true;
+                var stamp = payload.RecordedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm")
+                    ?? DateTime.Now.ToString("yyyy-MM-dd HH:mm");
+                var defaultPrefix = string.IsNullOrWhiteSpace(config.AudioOnlyFallbackTitle)
+                    ? "Voice memo"
+                    : config.AudioOnlyFallbackTitle.Trim();
+                transcription = $"{defaultPrefix} ({stamp})";
+            }
+            else
+            {
+                // "audio only" webhook, or transcription failed. We have nothing to name a task.
+                throw new ConversionException(
+                    "payload has no transcription text (webhook is likely set to 'audio only', " +
+                    "or transcription failed) — nothing to create a task from");
+            }
         }
 
         var title = CapTitle(transcription, config.TitleMaxLength);
@@ -28,7 +42,10 @@ public static class PayloadConverter
         // Collapse internal newlines in the title only; keep them in notes.
         title = CollapseWhitespace(title);
 
-        var notes = BuildNotes(transcription, payload);
+        var notesText = isAudioFallback
+            ? "[Audio recording attached — no transcription recognized]"
+            : transcription;
+        var notes = BuildNotes(notesText, payload);
 
         var task = new SpTaskRequest
         {
