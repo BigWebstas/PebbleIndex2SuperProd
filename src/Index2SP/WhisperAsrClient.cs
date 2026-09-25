@@ -22,10 +22,29 @@ public class WhisperAsrClient : IDisposable
     }
 
     /// <summary>
-    /// Transcribes the given audio bytes by POSTing to the /asr endpoint.
+    /// Transcribes the given audio bytes using either embedded in-process Whisper (whisper.cpp)
+    /// or by POSTing to an external Whisper ASR webservice depending on Mode.
     /// Returns the trimmed transcribed text, or null if the transcription was empty or whitespace.
     /// </summary>
     public async Task<string?> TranscribeAsync(
+        ReadOnlyMemory<byte> audioBytes,
+        string? fileName = null,
+        CancellationToken ct = default)
+    {
+        if (audioBytes.IsEmpty) return null;
+
+        if (string.Equals(_config.Mode, "remote", StringComparison.OrdinalIgnoreCase))
+        {
+            return await TranscribeRemoteAsync(audioBytes, fileName, ct);
+        }
+
+        return await EmbeddedWhisperEngine.TranscribeAsync(_config, audioBytes, fileName, _log, ct);
+    }
+
+    /// <summary>
+    /// Transcribes audio bytes by POSTing to the external /asr endpoint of onerahmet/openai-whisper-asr-webservice.
+    /// </summary>
+    public async Task<string?> TranscribeRemoteAsync(
         ReadOnlyMemory<byte> audioBytes,
         string? fileName = null,
         CancellationToken ct = default)
@@ -235,9 +254,22 @@ public class WhisperAsrClient : IDisposable
     private static string Truncate(string s, int max) => s.Length > max ? s[..max] + "…" : s;
 
     /// <summary>
-    /// Reachability probe. Pings GET /health (falling back to GET /docs) and measures round-trip latency.
+    /// Probe to test Whisper availability. Tests model loading in embedded mode, or HTTP reachability in remote mode.
     /// </summary>
     public async Task<string> TestAsync(CancellationToken ct = default)
+    {
+        if (string.Equals(_config.Mode, "remote", StringComparison.OrdinalIgnoreCase))
+        {
+            return await TestRemoteAsync(ct);
+        }
+
+        return await EmbeddedWhisperEngine.TestAsync(_config, _log, ct);
+    }
+
+    /// <summary>
+    /// Remote reachability probe. Pings GET /health (falling back to GET /docs) and measures round-trip latency.
+    /// </summary>
+    public async Task<string> TestRemoteAsync(CancellationToken ct = default)
     {
         var baseUrl = _config.BaseUrl.TrimEnd('/');
         var sw = Stopwatch.StartNew();

@@ -3,12 +3,125 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using Whisper.net;
+using Whisper.net.Ggml;
 using Xunit;
 
 namespace Index2SP.Tests;
 
 public class WhisperAsrClientTests
 {
+    [Theory]
+    [InlineData("tiny", GgmlType.Tiny)]
+    [InlineData("tiny.en", GgmlType.TinyEn)]
+    [InlineData("base", GgmlType.Base)]
+    [InlineData("base.en", GgmlType.BaseEn)]
+    [InlineData("small", GgmlType.Small)]
+    [InlineData("small.en", GgmlType.SmallEn)]
+    [InlineData("medium", GgmlType.Medium)]
+    [InlineData("large", GgmlType.LargeV3)]
+    [InlineData(null, GgmlType.BaseEn)]
+    public void EmbeddedWhisperEngine_ParseModelType_MapsCorrectly(string? input, GgmlType expected)
+    {
+        var result = EmbeddedWhisperEngine.ParseModelType(input);
+        Assert.Equal(expected, result);
+    }
+
+    [Fact]
+    public void EmbeddedWhisperEngine_GetModelFileName_ReturnsExpected()
+    {
+        Assert.Equal("ggml-base.en.bin", EmbeddedWhisperEngine.GetModelFileName(GgmlType.BaseEn));
+        Assert.Equal("ggml-tiny.en.bin", EmbeddedWhisperEngine.GetModelFileName(GgmlType.TinyEn));
+        Assert.Equal("ggml-small.bin", EmbeddedWhisperEngine.GetModelFileName(GgmlType.Small));
+    }
+
+    [Fact]
+    public void WhisperAsrConfig_Mode_InfersEmbeddedByDefault()
+    {
+        var cfg = new AppConfig.WhisperAsrConfig();
+        Assert.Equal("embedded", cfg.Mode);
+    }
+
+    [Fact]
+    public void WhisperAsrConfig_Mode_InfersRemoteWhenCustomBaseUrlProvided()
+    {
+        var cfg = new AppConfig.WhisperAsrConfig
+        {
+            BaseUrl = "http://192.168.1.186:9092",
+        };
+        Assert.Equal("remote", cfg.Mode);
+    }
+
+    [Fact]
+    public void WhisperAsrConfig_Mode_RespectsExplicitMode()
+    {
+        var cfg = new AppConfig.WhisperAsrConfig
+        {
+            Mode = "embedded",
+            BaseUrl = "http://192.168.1.186:9092",
+        };
+        Assert.Equal("embedded", cfg.Mode);
+    }
+
+    [Fact]
+    public async Task EmbeddedWhisper_CanTranscribeLocalAudio()
+    {
+        var tempModel = Path.Combine(Path.GetTempPath(), "test_ggml_tiny_en.bin");
+        if (!File.Exists(tempModel) || new FileInfo(tempModel).Length == 0)
+        {
+            using var modelStream = await WhisperGgmlDownloader.Default.GetGgmlModelAsync(GgmlType.TinyEn);
+            using var fs = File.Create(tempModel);
+            await modelStream.CopyToAsync(fs);
+        }
+
+        var config = new AppConfig.WhisperAsrConfig
+        {
+            Mode = "embedded",
+            Model = "tiny.en",
+            ModelPath = tempModel,
+            Language = "en",
+        };
+
+        using var client = new WhisperAsrClient(config);
+
+        var testMessage = await client.TestAsync();
+        Assert.Contains("OK", testMessage);
+        Assert.Contains("Embedded Whisper", testMessage);
+
+        if (File.Exists("/tmp/jfk.wav"))
+        {
+            var wavBytes = await File.ReadAllBytesAsync("/tmp/jfk.wav");
+            var result = await client.TranscribeAsync(wavBytes, "jfk.wav");
+            Assert.NotNull(result);
+            Assert.Contains("Americans", result);
+        }
+    }
+
+    [Fact]
+    public async Task EmbeddedWhisper_CanTranscribeM4aAudio()
+    {
+        if (!AudioDecoder.IsFfmpegAvailable) return;
+        const string jfkPath = "/tmp/jfk.m4a";
+        if (!File.Exists(jfkPath)) return;
+
+        var tempModel = Path.Combine(Path.GetTempPath(), "test_ggml_tiny_en.bin");
+        if (!File.Exists(tempModel) || new FileInfo(tempModel).Length == 0) return;
+
+        var config = new AppConfig.WhisperAsrConfig
+        {
+            Mode = "embedded",
+            Model = "tiny.en",
+            ModelPath = tempModel,
+            Language = "en",
+        };
+
+        using var client = new WhisperAsrClient(config);
+        var m4aBytes = await File.ReadAllBytesAsync(jfkPath);
+        var result = await client.TranscribeAsync(m4aBytes, "jfk.m4a");
+
+        Assert.NotNull(result);
+        Assert.Contains("Americans", result);
+    }
     [Fact]
     public void TryReadPcmWav_ParsesValidWav()
     {

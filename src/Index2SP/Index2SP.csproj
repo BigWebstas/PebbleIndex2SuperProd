@@ -43,6 +43,10 @@
 
     <!-- HKCU Run key on Windows; throws PlatformNotSupported elsewhere (guarded at call sites) -->
     <PackageReference Include="Microsoft.Win32.Registry" Version="5.0.0" />
+
+    <!-- Embedded Whisper speech-to-text engine (whisper.cpp) -->
+    <PackageReference Include="Whisper.net" Version="1.9.1" />
+    <PackageReference Include="Whisper.net.Runtime" Version="1.9.1" />
   </ItemGroup>
 
 </Project>

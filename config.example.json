@@ -60,6 +60,9 @@
   },
   "whisperAsr": {
     "enabled": false,
+    "mode": "embedded",
+    "model": "base.en",
+    "modelPath": "",
     "baseUrl": "http://127.0.0.1:9000",
     "language": "",
     "timeoutSeconds": 30

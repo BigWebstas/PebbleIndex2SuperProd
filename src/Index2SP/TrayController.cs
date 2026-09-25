@@ -243,7 +243,7 @@ public sealed class TrayController : IDisposable
         menu.Add(new NativeMenuItem(IntegrationTitle("Google Calendar", _config.GoogleCalendar.Enabled, _googleHealth)) { Menu = BuildGoogleCalendarSubmenu() });
         menu.Add(new NativeMenuItem(IntegrationTitle("Beeper messages", _config.Beeper.Enabled, _beeperHealth)) { Menu = BuildBeeperSubmenu() });
         menu.Add(new NativeMenuItem(IntegrationTitle("Telegram bot", _config.Telegram.Enabled, _telegramHealth)) { Menu = BuildTelegramSubmenu() });
-        menu.Add(new NativeMenuItem(IntegrationTitle("Whisper ASR webservice", _config.WhisperAsr.Enabled, _whisperAsrHealth)) { Menu = BuildWhisperAsrSubmenu() });
+        menu.Add(new NativeMenuItem(IntegrationTitle("Whisper transcription", _config.WhisperAsr.Enabled, _whisperAsrHealth)) { Menu = BuildWhisperAsrSubmenu() });
         menu.Add(new NativeMenuItem(FeatureTitle("Web search", _config.WebSearch.Enabled)) { Menu = BuildWebSearchSubmenu() });
         menu.Add(new NativeMenuItem(FeatureTitle("Webhook receipt", _config.WebhookReceipt.Enabled)) { Menu = BuildWebhookReceiptSubmenu() });
         menu.Add(new NativeMenuItemSeparator());
@@ -979,12 +979,84 @@ public sealed class TrayController : IDisposable
         enabled.Click += (_, _) => ToggleWhisperAsrEnabled();
         m.Add(enabled);
 
-        m.Add(Action("Set server URL (http://host:port)…", () => _ = SetWhisperAsrEndpointAsync()));
+        m.Add(new NativeMenuItemSeparator());
+
+        var isEmbedded = string.Equals(cfg.Mode, "embedded", StringComparison.OrdinalIgnoreCase);
+        var modeMenu = new NativeMenu();
+        var embeddedMode = new NativeMenuItem("Embedded (built-in whisper.cpp, zero Docker)")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = isEmbedded,
+        };
+        embeddedMode.Click += (_, _) => SetWhisperAsrMode("embedded");
+        modeMenu.Add(embeddedMode);
+
+        var remoteMode = new NativeMenuItem("Remote webservice (external container)")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = !isEmbedded,
+        };
+        remoteMode.Click += (_, _) => SetWhisperAsrMode("remote");
+        modeMenu.Add(remoteMode);
+        m.Add(new NativeMenuItem("Mode") { Menu = modeMenu });
+
+        if (isEmbedded)
+        {
+            m.Add(new NativeMenuItem("Model") { Menu = BuildWhisperModelSubmenu() });
+        }
+        else
+        {
+            m.Add(Action("Set server URL (http://host:port)…", () => _ = SetWhisperAsrEndpointAsync()));
+        }
+
         m.Add(new NativeMenuItem("Language") { Menu = BuildWhisperAsrLanguageSubmenu() });
-        m.Add(Action("Test connection", () => _ = RunWhisperAsrHealthCheckAsync(manual: true)));
-        m.Add(Disabled($"Server: {cfg.BaseUrl}"));
+        m.Add(Action(isEmbedded ? "Test model / inference" : "Test connection", () => _ = RunWhisperAsrHealthCheckAsync(manual: true)));
+
+        m.Add(new NativeMenuItemSeparator());
+        if (isEmbedded)
+        {
+            m.Add(Disabled("Engine: Embedded whisper.cpp"));
+            m.Add(Disabled($"Model: {cfg.Model}"));
+        }
+        else
+        {
+            m.Add(Disabled("Engine: Remote webservice"));
+            m.Add(Disabled($"Server: {cfg.BaseUrl}"));
+        }
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.Language) ? "Language: auto-detect" : $"Language: {cfg.Language}"));
-        m.Add(Disabled("Local Whisper ASR webservice (onerahmet/openai-whisper-asr-webservice) — fallback only"));
+        m.Add(Disabled("Only used for voice notes Pebble did not transcribe on-device"));
+        return m;
+    }
+
+    private NativeMenu BuildWhisperModelSubmenu()
+    {
+        var m = new NativeMenu();
+        var current = _config.WhisperAsr.Model ?? "base.en";
+
+        var models = new (string Id, string Label)[]
+        {
+            ("tiny.en", "tiny.en (~75 MB, fastest, English)"),
+            ("tiny", "tiny (~75 MB, fastest, Multilingual)"),
+            ("base.en", "base.en (~140 MB, recommended, English)"),
+            ("base", "base (~140 MB, standard, Multilingual)"),
+            ("small.en", "small.en (~460 MB, high accuracy, English)"),
+            ("small", "small (~460 MB, high accuracy, Multilingual)"),
+        };
+
+        foreach (var (id, label) in models)
+        {
+            var isChecked = string.Equals(id, current, StringComparison.OrdinalIgnoreCase);
+            var item = new NativeMenuItem(label)
+            {
+                ToggleType = NativeMenuItemToggleType.CheckBox,
+                IsChecked = isChecked,
+            };
+            item.Click += (_, _) => SetWhisperAsrModel(id);
+            m.Add(item);
+        }
+
+        m.Add(new NativeMenuItemSeparator());
+        m.Add(Action("Custom model or file path…", () => _ = SetWhisperAsrCustomModelAsync()));
         return m;
     }
 
@@ -2275,8 +2347,48 @@ public sealed class TrayController : IDisposable
     {
         var cfg = _config.WhisperAsr;
         cfg.Enabled = !cfg.Enabled;
-        SaveConfig($"Whisper ASR webservice {(cfg.Enabled ? "enabled" : "disabled")}");
+        SaveConfig($"Whisper transcription {(cfg.Enabled ? "enabled" : "disabled")}");
         if (cfg.Enabled)
+            _ = RunWhisperAsrHealthCheckAsync(manual: false);
+    }
+
+    private void SetWhisperAsrMode(string mode)
+    {
+        _config.WhisperAsr.Mode = mode;
+        SaveConfig($"Whisper transcription mode set to {mode}");
+        if (_config.WhisperAsr.Enabled)
+            _ = RunWhisperAsrHealthCheckAsync(manual: false);
+    }
+
+    private void SetWhisperAsrModel(string model)
+    {
+        _config.WhisperAsr.Model = model;
+        SaveConfig($"Whisper model set to {model}");
+        if (_config.WhisperAsr.Enabled)
+            _ = RunWhisperAsrHealthCheckAsync(manual: false);
+    }
+
+    private async Task SetWhisperAsrCustomModelAsync()
+    {
+        var value = await InputDialog.ShowAsync("Whisper model",
+            "Enter a standard model name (e.g. 'tiny.en', 'base.en', 'small.en', 'medium')\n" +
+            "or an absolute path to a local GGML .bin file.\n" +
+            $"Current: {_config.WhisperAsr.Model}", masked: false);
+        if (value is null || value.Trim().Length == 0) return;
+
+        var trimmed = value.Trim();
+        if (File.Exists(trimmed))
+        {
+            _config.WhisperAsr.ModelPath = trimmed;
+            _config.WhisperAsr.Model = Path.GetFileNameWithoutExtension(trimmed);
+        }
+        else
+        {
+            _config.WhisperAsr.ModelPath = "";
+            _config.WhisperAsr.Model = trimmed;
+        }
+        SaveConfig($"Whisper model updated to {_config.WhisperAsr.Model}");
+        if (_config.WhisperAsr.Enabled)
             _ = RunWhisperAsrHealthCheckAsync(manual: false);
     }
 

@@ -169,8 +169,44 @@ public sealed class AppConfig
     {
         public bool Enabled { get; set; } = false;
 
-        /// <summary>Base URL of the Whisper ASR webservice (default is http://127.0.0.1:9000).</summary>
+        private string? _mode;
+
+        /// <summary>Operation mode: "embedded" (runs whisper.cpp directly in-process, zero external dependencies)
+        /// or "remote" (connects to an external onerahmet/openai-whisper-asr-webservice container).</summary>
+        public string Mode
+        {
+            get
+            {
+                if (!string.IsNullOrWhiteSpace(_mode)) return _mode;
+                if (!string.IsNullOrWhiteSpace(BaseUrl) &&
+                    !BaseUrl.StartsWith("http://127.0.0.1:9000", StringComparison.OrdinalIgnoreCase) &&
+                    !BaseUrl.StartsWith("http://localhost:9000", StringComparison.OrdinalIgnoreCase))
+                {
+                    return "remote";
+                }
+                return "embedded";
+            }
+            set => _mode = value;
+        }
+
+        /// <summary>Whisper model name for embedded mode (e.g. "base.en", "tiny.en", "small.en", "base", "small").
+        /// Defaults to "base.en".</summary>
+        [JsonPropertyName("model")]
+        public string Model { get; set; } = "base.en";
+
+        /// <summary>Optional custom path to a local GGML model file (.bin). If specified, overrides the automatic download.</summary>
+        public string ModelPath { get; set; } = "";
+
+        /// <summary>Base URL of the external Whisper ASR webservice (default is http://127.0.0.1:9000). Used when Mode is "remote".</summary>
         public string BaseUrl { get; set; } = "http://127.0.0.1:9000";
+
+        /// <summary>Synonym/alias for BaseUrl.</summary>
+        [JsonIgnore]
+        public string RemoteUrl
+        {
+            get => BaseUrl;
+            set => BaseUrl = value;
+        }
 
         /// <summary>Spoken language code (e.g. "en", "es", "de") to request. Blank uses auto-detection.</summary>
         public string Language { get; set; } = "";
@@ -212,11 +248,6 @@ public sealed class AppConfig
                 BaseUrl = $"http://{host}:{value}";
             }
         }
-
-        /// <summary>Backward-compatibility helper for model setting (model is configured at container launch in Whisper ASR webservice).</summary>
-        [JsonPropertyName("model")]
-        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-        public string? Model { get; set; }
     }
 
     public sealed class WhisperLiveConfig : WhisperAsrConfig { }
