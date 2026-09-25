@@ -58,14 +58,10 @@
     "apiToken": "paste-a-personal-access-token-from-Beeper-Desktop-API-settings",
     "timeoutSeconds": 8
   },
-  "whisperLive": {
+  "whisperAsr": {
     "enabled": false,
-    "host": "127.0.0.1",
-    "port": 9090,
-    "model": "small",
+    "baseUrl": "http://127.0.0.1:9000",
     "language": "",
-    "useVad": true,
-    "useWss": false,
     "timeoutSeconds": 30
   },
   "webSearch": {

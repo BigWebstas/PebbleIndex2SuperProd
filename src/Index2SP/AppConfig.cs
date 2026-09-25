@@ -67,22 +67,32 @@ public sealed class AppConfig
 
     public BeeperConfig Beeper { get; set; } = new();
  
+    [JsonPropertyName("whisperAsr")]
+    public WhisperAsrConfig WhisperAsr { get; set; } = new();
+
+    /// <summary>Backward-compatibility alias for configurations referencing "whisperLive".</summary>
     [JsonPropertyName("whisperLive")]
-    public WhisperLiveConfig WhisperLive { get; set; } = new();
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public WhisperAsrConfig? LegacyWhisperLive { get; set; }
 
     /// <summary>Backward-compatibility alias for configurations referencing "wyoming".</summary>
     [JsonPropertyName("wyoming")]
-    public WhisperLiveConfig? LegacyWyoming { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public WhisperAsrConfig? LegacyWyoming { get; set; }
 
     /// <summary>Backward-compatibility alias for configurations referencing "whisper".</summary>
     [JsonPropertyName("whisper")]
-    public WhisperLiveConfig? LegacyWhisper { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public WhisperAsrConfig? LegacyWhisper { get; set; }
 
     [JsonIgnore]
-    public WhisperLiveConfig Wyoming => WhisperLive;
+    public WhisperAsrConfig WhisperLive => WhisperAsr;
 
     [JsonIgnore]
-    public WhisperLiveConfig Whisper => WhisperLive;
+    public WhisperAsrConfig Wyoming => WhisperAsr;
+
+    [JsonIgnore]
+    public WhisperAsrConfig Whisper => WhisperAsr;
 
     public WebSearchConfig WebSearch { get; set; } = new();
 
@@ -151,57 +161,66 @@ public sealed class AppConfig
     /// <summary>
     /// Optional: when Pebble sends a webhook with an audio file but no transcription text (the
     /// case that's normally rejected with a 422), transcribe the audio locally instead of
-    /// dropping it. Connects to a local speech-to-text server running Collabora's WhisperLive
-    /// (ghcr.io/collabora/whisperlive-cpu:latest) over WebSocket (ws://host:port). Never overrides
-    /// a transcription Pebble already sent; only fills in for a genuinely audio-only webhook.
+    /// dropping it. Connects to a local speech-to-text server running onerahmet/openai-whisper-asr-webservice
+    /// over HTTP REST (default: http://127.0.0.1:9000). Never overrides a transcription Pebble
+    /// already sent; only fills in for a genuinely audio-only webhook.
     /// </summary>
-    public class WhisperLiveConfig
+    public class WhisperAsrConfig
     {
         public bool Enabled { get; set; } = false;
 
-        /// <summary>Host of the local WhisperLive server, e.g. "127.0.0.1" or "localhost".</summary>
-        public string Host { get; set; } = "127.0.0.1";
-
-        /// <summary>WebSocket port of the WhisperLive server (default is 9090).</summary>
-        public int Port { get; set; } = 9090;
-
-        /// <summary>Whisper model name to request (e.g. "small", "base", "tiny", "medium", "large-v3"). Defaults to "small".</summary>
-        public string Model { get; set; } = "small";
+        /// <summary>Base URL of the Whisper ASR webservice (default is http://127.0.0.1:9000).</summary>
+        public string BaseUrl { get; set; } = "http://127.0.0.1:9000";
 
         /// <summary>Spoken language code (e.g. "en", "es", "de") to request. Blank uses auto-detection.</summary>
         public string Language { get; set; } = "";
 
-        /// <summary>Whether to enable Voice Activity Detection (VAD) on the server. Enabled by default.</summary>
-        public bool UseVad { get; set; } = true;
-
-        /// <summary>Whether to use secure WebSocket (wss://) instead of ws://.</summary>
-        public bool UseWss { get; set; } = false;
-
         /// <summary>Seconds to wait for a transcription before giving up and falling back to the
-        /// normal audio-only rejection. Transcription is slower than a classify call, so this has
-        /// a higher ceiling than the other integrations. Clamped 5–120.</summary>
+        /// normal audio-only rejection. Clamped 5–120.</summary>
         public int TimeoutSeconds { get; set; } = 30;
 
-        /// <summary>Backward-compatibility helper that accepts or returns ws://host:port or baseUrl.</summary>
-        [JsonPropertyName("baseUrl")]
-        public string? BaseUrl
+        /// <summary>Optional host setting for backward-compatible deserialization from legacy configs.</summary>
+        [JsonPropertyName("host")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? HostSetting { get; set; }
+
+        /// <summary>Optional port setting for backward-compatible deserialization from legacy configs.</summary>
+        [JsonPropertyName("port")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public int? PortSetting { get; set; }
+
+        /// <summary>Backward-compatibility helper that gets or sets host in host:port representations.</summary>
+        [JsonIgnore]
+        public string Host
         {
-            get => $"ws{(UseWss ? "s" : "")}://{Host}:{Port}";
+            get => ParseEndpoint(BaseUrl, 9000).Host;
             set
             {
-                if (!string.IsNullOrWhiteSpace(value))
-                {
-                    if (value.StartsWith("wss://", StringComparison.OrdinalIgnoreCase))
-                        UseWss = true;
-                    var (h, p) = ParseEndpoint(value, Port);
-                    Host = h;
-                    Port = p;
-                }
+                var port = ParseEndpoint(BaseUrl, 9000).Port;
+                BaseUrl = $"http://{value}:{port}";
             }
         }
+
+        /// <summary>Backward-compatibility helper that gets or sets port in host:port representations.</summary>
+        [JsonIgnore]
+        public int Port
+        {
+            get => ParseEndpoint(BaseUrl, 9000).Port;
+            set
+            {
+                var host = ParseEndpoint(BaseUrl, 9000).Host;
+                BaseUrl = $"http://{host}:{value}";
+            }
+        }
+
+        /// <summary>Backward-compatibility helper for model setting (model is configured at container launch in Whisper ASR webservice).</summary>
+        [JsonPropertyName("model")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? Model { get; set; }
     }
 
-    public sealed class WyomingConfig : WhisperLiveConfig { }
+    public sealed class WhisperLiveConfig : WhisperAsrConfig { }
+    public sealed class WyomingConfig : WhisperAsrConfig { }
 
     /// <summary>
     /// Optional: when the AI classifier decides a transcription is a request to message someone
@@ -484,42 +503,87 @@ public sealed class AppConfig
         Beeper ??= new BeeperConfig();
         Beeper.TimeoutSeconds = Math.Clamp(Beeper.TimeoutSeconds, 2, 30);
         if (string.IsNullOrWhiteSpace(Beeper.BaseUrl)) Beeper.BaseUrl = "http://127.0.0.1:23373";
+        if (LegacyWhisperLive is not null)
+        {
+            if (LegacyWhisperLive.Enabled) WhisperAsr.Enabled = true;
+            if (!string.IsNullOrWhiteSpace(LegacyWhisperLive.HostSetting))
+            {
+                var port = LegacyWhisperLive.PortSetting ?? 9000;
+                WhisperAsr.BaseUrl = $"http://{LegacyWhisperLive.HostSetting}:{port}";
+            }
+            else if (!string.IsNullOrWhiteSpace(LegacyWhisperLive.BaseUrl) && LegacyWhisperLive.BaseUrl != "http://127.0.0.1:9000")
+            {
+                WhisperAsr.BaseUrl = LegacyWhisperLive.BaseUrl;
+            }
+            if (!string.IsNullOrWhiteSpace(LegacyWhisperLive.Language))
+                WhisperAsr.Language = LegacyWhisperLive.Language;
+            if (LegacyWhisperLive.TimeoutSeconds != 30 && LegacyWhisperLive.TimeoutSeconds != 0)
+                WhisperAsr.TimeoutSeconds = LegacyWhisperLive.TimeoutSeconds;
+        }
+
         if (LegacyWyoming is not null)
         {
-            if (LegacyWyoming.Enabled) WhisperLive.Enabled = true;
-            if (!string.IsNullOrWhiteSpace(LegacyWyoming.Host) && LegacyWyoming.Host != "127.0.0.1")
-                WhisperLive.Host = LegacyWyoming.Host;
-            if (LegacyWyoming.Port is > 0 and <= 65535 && LegacyWyoming.Port != 9090)
-                WhisperLive.Port = LegacyWyoming.Port;
-            if (!string.IsNullOrWhiteSpace(LegacyWyoming.Model))
-                WhisperLive.Model = LegacyWyoming.Model;
+            if (LegacyWyoming.Enabled) WhisperAsr.Enabled = true;
+            if (!string.IsNullOrWhiteSpace(LegacyWyoming.HostSetting))
+            {
+                var port = LegacyWyoming.PortSetting ?? 10300;
+                WhisperAsr.BaseUrl = $"http://{LegacyWyoming.HostSetting}:{port}";
+            }
+            else if (!string.IsNullOrWhiteSpace(LegacyWyoming.BaseUrl) && LegacyWyoming.BaseUrl != "http://127.0.0.1:9000")
+            {
+                WhisperAsr.BaseUrl = LegacyWyoming.BaseUrl;
+            }
             if (!string.IsNullOrWhiteSpace(LegacyWyoming.Language))
-                WhisperLive.Language = LegacyWyoming.Language;
+                WhisperAsr.Language = LegacyWyoming.Language;
             if (LegacyWyoming.TimeoutSeconds != 30 && LegacyWyoming.TimeoutSeconds != 0)
-                WhisperLive.TimeoutSeconds = LegacyWyoming.TimeoutSeconds;
+                WhisperAsr.TimeoutSeconds = LegacyWyoming.TimeoutSeconds;
         }
 
         if (LegacyWhisper is not null)
         {
-            if (LegacyWhisper.Enabled) WhisperLive.Enabled = true;
-            if (!string.IsNullOrWhiteSpace(LegacyWhisper.Host) && LegacyWhisper.Host != "127.0.0.1")
-                WhisperLive.Host = LegacyWhisper.Host;
-            if (LegacyWhisper.Port is > 0 and <= 65535 && LegacyWhisper.Port != 9090)
-                WhisperLive.Port = LegacyWhisper.Port;
-            if (!string.IsNullOrWhiteSpace(LegacyWhisper.Model))
-                WhisperLive.Model = LegacyWhisper.Model;
+            if (LegacyWhisper.Enabled) WhisperAsr.Enabled = true;
+            if (!string.IsNullOrWhiteSpace(LegacyWhisper.HostSetting))
+            {
+                var port = LegacyWhisper.PortSetting ?? 9000;
+                WhisperAsr.BaseUrl = $"http://{LegacyWhisper.HostSetting}:{port}";
+            }
+            else if (!string.IsNullOrWhiteSpace(LegacyWhisper.BaseUrl) && LegacyWhisper.BaseUrl != "http://127.0.0.1:9000")
+            {
+                WhisperAsr.BaseUrl = LegacyWhisper.BaseUrl;
+            }
             if (!string.IsNullOrWhiteSpace(LegacyWhisper.Language))
-                WhisperLive.Language = LegacyWhisper.Language;
+                WhisperAsr.Language = LegacyWhisper.Language;
             if (LegacyWhisper.TimeoutSeconds != 30 && LegacyWhisper.TimeoutSeconds != 0)
-                WhisperLive.TimeoutSeconds = LegacyWhisper.TimeoutSeconds;
+                WhisperAsr.TimeoutSeconds = LegacyWhisper.TimeoutSeconds;
         }
 
-        WhisperLive ??= new WhisperLiveConfig();
-        WhisperLive.TimeoutSeconds = Math.Clamp(WhisperLive.TimeoutSeconds, 5, 120);
-        if (string.IsNullOrWhiteSpace(WhisperLive.Host)) WhisperLive.Host = "127.0.0.1";
-        var (wlHost, wlPort) = ParseEndpoint(WhisperLive.Host, WhisperLive.Port);
-        WhisperLive.Host = wlHost;
-        WhisperLive.Port = wlPort is > 0 and <= 65535 ? wlPort : 9090;
+        WhisperAsr ??= new WhisperAsrConfig();
+        if (!string.IsNullOrWhiteSpace(WhisperAsr.HostSetting))
+        {
+            var p = WhisperAsr.PortSetting ?? ParseEndpoint(WhisperAsr.BaseUrl, 9000).Port;
+            WhisperAsr.BaseUrl = $"http://{WhisperAsr.HostSetting}:{p}";
+        }
+        WhisperAsr.HostSetting = null;
+        WhisperAsr.PortSetting = null;
+        LegacyWhisperLive = null;
+        LegacyWyoming = null;
+        LegacyWhisper = null;
+        WhisperAsr.TimeoutSeconds = Math.Clamp(WhisperAsr.TimeoutSeconds, 5, 120);
+        if (string.IsNullOrWhiteSpace(WhisperAsr.BaseUrl))
+        {
+            WhisperAsr.BaseUrl = "http://127.0.0.1:9000";
+        }
+        else
+        {
+            var trimmedUrl = WhisperAsr.BaseUrl.Trim();
+            if (!trimmedUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+                !trimmedUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
+                var (h, p) = ParseEndpoint(trimmedUrl, 9000);
+                WhisperAsr.BaseUrl = $"http://{h}:{p}";
+            }
+            WhisperAsr.BaseUrl = WhisperAsr.BaseUrl.TrimEnd('/');
+        }
         WebSearch ??= new WebSearchConfig();
         WebSearch.MaxUses = Math.Clamp(WebSearch.MaxUses, 1, 10);
         WebSearch.SendDelaySeconds = Math.Clamp(WebSearch.SendDelaySeconds, 0, 60);
@@ -533,7 +597,7 @@ public sealed class AppConfig
         SuperProductivity.TagIds ??= new List<string>();
     }
 
-    public static (string Host, int Port) ParseEndpoint(string? endpoint, int defaultPort = 9090)
+    public static (string Host, int Port) ParseEndpoint(string? endpoint, int defaultPort = 9000)
     {
         if (string.IsNullOrWhiteSpace(endpoint))
             return ("127.0.0.1", defaultPort);

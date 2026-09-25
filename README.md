@@ -16,8 +16,8 @@ Pebble Index 01 ──HTTPS──▶ your tunnel ──▶ Index2SP :8787/pebble
 
 - Every note becomes an SP task — title from the transcription, full text + metadata in notes.
 - SP unreachable? Queued to a local outbox, retried until it lands.
-- Audio with no transcription (Pebble sent audio only)? With WhisperLive transcription on, a local
-  WhisperLive speech-to-text server (e.g. `ghcr.io/collabora/whisperlive-cpu:latest`) transcribes it
+- Audio with no transcription (Pebble sent audio only)? With Whisper ASR webservice on, a local
+  Whisper ASR webservice (e.g. `onerahmet/openai-whisper-asr-webservice:latest`) transcribes it
   instead of the webhook being rejected.
 - With `aiClassifier` on, the AI also: cleans the task title (strips "add a task to", "remind
   me to", "send a message to X saying", etc. down to just the content), picks project/tags,
@@ -85,13 +85,11 @@ Two setups need an extra step first:
   the bot's `getUpdates` response (or ask [@userinfobot](https://t.me/userinfobot)) for that
   chat's ID — set it under **Web search** and/or **Webhook receipt**.
 
-**WhisperLive transcription** connects to a local speech-to-text server implementing the WhisperLive
-WebSocket protocol (such as Collabora's `ghcr.io/collabora/whisperlive-cpu:latest` container)
-over WebSockets (defaulting to port 9090, `ws://127.0.0.1:9090`). Run it simply with:
+**Whisper ASR webservice** connects to a local speech-to-text server running the `onerahmet/openai-whisper-asr-webservice` container over HTTP REST (defaulting to port 9000, `http://127.0.0.1:9000`). Run it simply with:
 ```bash
-docker run -it -p 9090:9090 ghcr.io/collabora/whisperlive-cpu:latest
+docker run -d -p 9000:9000 -e ASR_MODEL=base onerahmet/openai-whisper-asr-webservice:latest
 ```
-Compressed audio like Pebble's `.m4a` files is automatically decoded to PCM via ffmpeg, while standard PCM WAV files are decoded directly. It's a fallback only: Pebble's own transcription is always used when present, and this only fires for a genuinely audio-only webhook.
+Audio files (including Pebble's native `.m4a` files and `.wav` recordings) are POSTed directly to `/asr` as multipart form-data. The container decodes compressed audio internally via its bundled ffmpeg. It's a fallback only: Pebble's own transcription is always used when present, and this only fires for a genuinely audio-only webhook.
 
 **Web search** ("search the web for...", "google...", "what is the latest version of X") searches
 via whichever provider is selected for classification — Claude and Gemini each have a real
@@ -131,7 +129,7 @@ CI builds every push/PR; pushing a `v*` tag cuts a [GitHub Release](https://gith
 
 ## Limitations
 
-- Audio-only webhooks are rejected (422) — no text, no task — unless WhisperLive transcription is on.
+- Audio-only webhooks are rejected (422) — no text, no task — unless Whisper ASR webservice is on.
 - No recurring tasks or subtasks (the SP REST API doesn't support them).
 - Outbox retries check for an exact title+notes match before recreating a task, which covers a
   lost reply after Super Productivity actually created it — but not two genuinely separate

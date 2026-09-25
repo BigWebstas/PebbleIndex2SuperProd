@@ -60,9 +60,9 @@ public sealed class TrayController : IDisposable
     private int _aiFailureStreak;
     private bool _aiHealthCheckInFlight;
 
-    private SpHealth _whisperLiveHealth = SpHealth.Unknown;
-    private int _whisperLiveFailureStreak;
-    private bool _whisperLiveHealthCheckInFlight;
+    private SpHealth _whisperAsrHealth = SpHealth.Unknown;
+    private int _whisperAsrFailureStreak;
+    private bool _whisperAsrHealthCheckInFlight;
 
     private UpdateChecker.UpdateInfo? _updateAvailable;
     private bool _updateCheckInFlight;
@@ -80,21 +80,7 @@ public sealed class TrayController : IDisposable
     private IReadOnlyList<SpNamedItem> _claudeModels = Array.Empty<SpNamedItem>();
     private IReadOnlyList<SpNamedItem> _geminiModels = Array.Empty<SpNamedItem>();
 
-    private static readonly string[] WhisperLiveStandardModels =
-    [
-        "tiny",
-        "tiny.en",
-        "base",
-        "base.en",
-        "small",
-        "small.en",
-        "medium",
-        "medium.en",
-        "large-v3",
-        "large-v3-turbo",
-    ];
-
-    private static readonly (string Code, string Name)[] WhisperLiveLanguages =
+    private static readonly (string Code, string Name)[] WhisperAsrLanguages =
     [
         ("en", "English"),
         ("es", "Spanish (Español)"),
@@ -171,7 +157,7 @@ public sealed class TrayController : IDisposable
                 RunBeeperHealthCheckAsync(manual: false),
                 RunTelegramHealthCheckAsync(manual: false),
                 RunAiHealthCheckAsync(manual: false),
-                RunWhisperLiveHealthCheckAsync(manual: false));
+                RunWhisperAsrHealthCheckAsync(manual: false));
         };
         ConfigureHealthTimer();
 
@@ -257,7 +243,7 @@ public sealed class TrayController : IDisposable
         menu.Add(new NativeMenuItem(IntegrationTitle("Google Calendar", _config.GoogleCalendar.Enabled, _googleHealth)) { Menu = BuildGoogleCalendarSubmenu() });
         menu.Add(new NativeMenuItem(IntegrationTitle("Beeper messages", _config.Beeper.Enabled, _beeperHealth)) { Menu = BuildBeeperSubmenu() });
         menu.Add(new NativeMenuItem(IntegrationTitle("Telegram bot", _config.Telegram.Enabled, _telegramHealth)) { Menu = BuildTelegramSubmenu() });
-        menu.Add(new NativeMenuItem(IntegrationTitle("WhisperLive transcription", _config.WhisperLive.Enabled, _whisperLiveHealth)) { Menu = BuildWhisperLiveSubmenu() });
+        menu.Add(new NativeMenuItem(IntegrationTitle("Whisper ASR webservice", _config.WhisperAsr.Enabled, _whisperAsrHealth)) { Menu = BuildWhisperAsrSubmenu() });
         menu.Add(new NativeMenuItem(FeatureTitle("Web search", _config.WebSearch.Enabled)) { Menu = BuildWebSearchSubmenu() });
         menu.Add(new NativeMenuItem(FeatureTitle("Webhook receipt", _config.WebhookReceipt.Enabled)) { Menu = BuildWebhookReceiptSubmenu() });
         menu.Add(new NativeMenuItemSeparator());
@@ -392,15 +378,15 @@ public sealed class TrayController : IDisposable
             line += $"  ·  {ai}";
         }
 
-        if (_config.WhisperLive.Enabled)
+        if (_config.WhisperAsr.Enabled)
         {
-            var whisperLive = _whisperLiveHealth switch
+            var whisper = _whisperAsrHealth switch
             {
-                SpHealth.Ok => "WhisperLive reachable",
-                SpHealth.Unreachable => "WhisperLive unreachable",
-                _ => "WhisperLive not checked yet",
+                SpHealth.Ok => "Whisper ASR reachable",
+                SpHealth.Unreachable => "Whisper ASR unreachable",
+                _ => "Whisper ASR not checked yet",
             };
-            line += $"  ·  {whisperLive}";
+            line += $"  ·  {whisper}";
         }
 
         return line;
@@ -980,110 +966,44 @@ public sealed class TrayController : IDisposable
         return m;
     }
 
-    private NativeMenu BuildWhisperLiveSubmenu()
+    private NativeMenu BuildWhisperAsrSubmenu()
     {
         var m = new NativeMenu();
-        var cfg = _config.WhisperLive;
+        var cfg = _config.WhisperAsr;
 
         var enabled = new NativeMenuItem("Enabled")
         {
             ToggleType = NativeMenuItemToggleType.CheckBox,
             IsChecked = cfg.Enabled,
         };
-        enabled.Click += (_, _) => ToggleWhisperLiveEnabled();
+        enabled.Click += (_, _) => ToggleWhisperAsrEnabled();
         m.Add(enabled);
 
-        m.Add(Action("Set server (host:port)…", () => _ = SetWhisperLiveEndpointAsync()));
-
-        var wss = new NativeMenuItem("Use SSL / WSS")
-        {
-            ToggleType = NativeMenuItemToggleType.CheckBox,
-            IsChecked = cfg.UseWss,
-        };
-        wss.Click += (_, _) => ToggleWhisperLiveUseWss();
-        m.Add(wss);
-
-        var vad = new NativeMenuItem("Voice Activity Detection (VAD)")
-        {
-            ToggleType = NativeMenuItemToggleType.CheckBox,
-            IsChecked = cfg.UseVad,
-        };
-        vad.Click += (_, _) => ToggleWhisperLiveUseVad();
-        m.Add(vad);
-
-        m.Add(new NativeMenuItem("Model") { Menu = BuildWhisperLiveModelSubmenu() });
-        m.Add(new NativeMenuItem("Language") { Menu = BuildWhisperLiveLanguageSubmenu() });
-        m.Add(Action("Test connection", () => _ = RunWhisperLiveHealthCheckAsync(manual: true)));
-        m.Add(Disabled($"Server: {(cfg.UseWss ? "wss" : "ws")}://{cfg.Host}:{cfg.Port}"));
-        m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.Model) ? "Model: small (default)" : $"Model: {cfg.Model}"));
+        m.Add(Action("Set server URL (http://host:port)…", () => _ = SetWhisperAsrEndpointAsync()));
+        m.Add(new NativeMenuItem("Language") { Menu = BuildWhisperAsrLanguageSubmenu() });
+        m.Add(Action("Test connection", () => _ = RunWhisperAsrHealthCheckAsync(manual: true)));
+        m.Add(Disabled($"Server: {cfg.BaseUrl}"));
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.Language) ? "Language: auto-detect" : $"Language: {cfg.Language}"));
-        m.Add(Disabled($"VAD: {(cfg.UseVad ? "enabled" : "disabled")}") );
-        m.Add(Disabled("Local WhisperLive STT server (ghcr.io/collabora/whisperlive-cpu) — fallback only, when Pebble sends audio but no text"));
+        m.Add(Disabled("Local Whisper ASR webservice (onerahmet/openai-whisper-asr-webservice) — fallback only"));
         return m;
     }
 
-    private NativeMenu BuildWhisperLiveModelSubmenu()
+    private NativeMenu BuildWhisperAsrLanguageSubmenu()
     {
         var m = new NativeMenu();
-        var current = _config.WhisperLive.Model ?? "";
-
-        var defaultItem = new NativeMenuItem("(default: small)")
-        {
-            ToggleType = NativeMenuItemToggleType.CheckBox,
-            IsChecked = string.IsNullOrWhiteSpace(current) || string.Equals(current, "small", StringComparison.OrdinalIgnoreCase),
-        };
-        defaultItem.Click += (_, _) => SetWhisperLiveModel("");
-        m.Add(defaultItem);
-        m.Add(new NativeMenuItemSeparator());
-
-        var models = WhisperLiveStandardModels;
-
-        var seenCurrent = string.IsNullOrWhiteSpace(current);
-        foreach (var model in models)
-        {
-            var isCurrent = string.Equals(model, current, StringComparison.OrdinalIgnoreCase);
-            if (isCurrent) seenCurrent = true;
-            var item = new NativeMenuItem(model)
-            {
-                ToggleType = NativeMenuItemToggleType.CheckBox,
-                IsChecked = isCurrent,
-            };
-            item.Click += (_, _) => SetWhisperLiveModel(model);
-            m.Add(item);
-        }
-
-        if (!seenCurrent && !string.IsNullOrWhiteSpace(current))
-        {
-            var customCurrentItem = new NativeMenuItem($"{current} (custom)")
-            {
-                ToggleType = NativeMenuItemToggleType.CheckBox,
-                IsChecked = true,
-            };
-            customCurrentItem.Click += (_, _) => SetWhisperLiveModel(current);
-            m.Add(customCurrentItem);
-        }
-
-        m.Add(new NativeMenuItemSeparator());
-        m.Add(Action("Custom model name…", () => _ = SetWhisperLiveModelAsync()));
-        return m;
-    }
-
-    private NativeMenu BuildWhisperLiveLanguageSubmenu()
-    {
-        var m = new NativeMenu();
-        var current = _config.WhisperLive.Language ?? "";
+        var current = _config.WhisperAsr.Language ?? "";
 
         var autoItem = new NativeMenuItem("Auto-detect (server default)")
         {
             ToggleType = NativeMenuItemToggleType.CheckBox,
             IsChecked = string.IsNullOrWhiteSpace(current),
         };
-        autoItem.Click += (_, _) => SetWhisperLiveLanguage("");
+        autoItem.Click += (_, _) => SetWhisperAsrLanguage("");
         m.Add(autoItem);
         m.Add(new NativeMenuItemSeparator());
 
         var seenCurrent = string.IsNullOrWhiteSpace(current);
-        foreach (var (code, name) in WhisperLiveLanguages)
+        foreach (var (code, name) in WhisperAsrLanguages)
         {
             var isCurrent = string.Equals(code, current, StringComparison.OrdinalIgnoreCase);
             if (isCurrent) seenCurrent = true;
@@ -1092,7 +1012,7 @@ public sealed class TrayController : IDisposable
                 ToggleType = NativeMenuItemToggleType.CheckBox,
                 IsChecked = isCurrent,
             };
-            item.Click += (_, _) => SetWhisperLiveLanguage(code);
+            item.Click += (_, _) => SetWhisperAsrLanguage(code);
             m.Add(item);
         }
 
@@ -1103,12 +1023,12 @@ public sealed class TrayController : IDisposable
                 ToggleType = NativeMenuItemToggleType.CheckBox,
                 IsChecked = true,
             };
-            customItem.Click += (_, _) => SetWhisperLiveLanguage(current);
+            customItem.Click += (_, _) => SetWhisperAsrLanguage(current);
             m.Add(customItem);
         }
 
         m.Add(new NativeMenuItemSeparator());
-        m.Add(Action("Custom language code…", () => _ = SetWhisperLiveLanguageAsync()));
+        m.Add(Action("Custom language code…", () => _ = SetWhisperAsrLanguageAsync()));
         return m;
     }
 
@@ -1174,7 +1094,7 @@ public sealed class TrayController : IDisposable
             _ = RunBeeperHealthCheckAsync(manual: false);
             _ = RunTelegramHealthCheckAsync(manual: false);
             _ = RunAiHealthCheckAsync(manual: false);
-            _ = RunWhisperLiveHealthCheckAsync(manual: false);
+            _ = RunWhisperAsrHealthCheckAsync(manual: false);
             _ = RefreshListsAsync(notifyOnError: false);
         }
         catch (Exception ex)
@@ -1237,14 +1157,14 @@ public sealed class TrayController : IDisposable
             _beeperHealth = SpHealth.Unknown;
             _telegramHealth = SpHealth.Unknown;
             _aiHealth = SpHealth.Unknown;
-            _whisperLiveHealth = SpHealth.Unknown;
+            _whisperAsrHealth = SpHealth.Unknown;
             _spFailureStreak = 0;
             _joplinFailureStreak = 0;
             _googleFailureStreak = 0;
             _beeperFailureStreak = 0;
             _telegramFailureStreak = 0;
             _aiFailureStreak = 0;
-            _whisperLiveFailureStreak = 0;
+            _whisperAsrFailureStreak = 0;
             _captureTag = new CaptureTagResolver(_config.SuperProductivity, _log);
             _classifier.Dispose();
             _classifier = new AiTaskClassifier(_config.AiClassifier, _log);
@@ -1552,24 +1472,24 @@ public sealed class TrayController : IDisposable
         }
     }
 
-    /// <summary>Only runs while WhisperLive transcription is enabled.</summary>
-    private async Task RunWhisperLiveHealthCheckAsync(bool manual)
+    /// <summary>Only runs while Whisper ASR webservice is enabled.</summary>
+    private async Task RunWhisperAsrHealthCheckAsync(bool manual)
     {
-        if (!_config.WhisperLive.Enabled)
+        if (!_config.WhisperAsr.Enabled)
         {
-            if (manual) Notify("WhisperLive", "Disabled — nothing to test.", NotifyKind.Error, force: true);
+            if (manual) Notify("Whisper ASR", "Disabled — nothing to test.", NotifyKind.Error, force: true);
             return;
         }
-        if (!manual && _whisperLiveHealthCheckInFlight) return;
-        _whisperLiveHealthCheckInFlight = true;
+        if (!manual && _whisperAsrHealthCheckInFlight) return;
+        _whisperAsrHealthCheckInFlight = true;
         try
         {
             SpHealth state;
             string message;
             try
             {
-                using var whisperLive = new WhisperLiveClient(_config.WhisperLive);
-                message = await whisperLive.TestAsync();
+                using var whisperAsr = new WhisperAsrClient(_config.WhisperAsr);
+                message = await whisperAsr.TestAsync();
                 state = SpHealth.Ok;
             }
             catch (Exception ex)
@@ -1578,35 +1498,35 @@ public sealed class TrayController : IDisposable
                 state = SpHealth.Unreachable;
             }
 
-            var prev = _whisperLiveHealth;
-            _whisperLiveHealth = state;
-            var outage = CrossedOutageThreshold(state, ref _whisperLiveFailureStreak);
+            var prev = _whisperAsrHealth;
+            _whisperAsrHealth = state;
+            var outage = CrossedOutageThreshold(state, ref _whisperAsrFailureStreak);
 
             if (state != prev)
             {
                 if (state == SpHealth.Ok)
                     _log.Info(prev == SpHealth.Unreachable
-                        ? $"WhisperLive connection restored — {message}"
-                        : $"WhisperLive reachable — {message}");
+                        ? $"Whisper ASR connection restored — {message}"
+                        : $"Whisper ASR reachable — {message}");
                 else
-                    _log.Warn($"WhisperLive unreachable — {message}");
+                    _log.Warn($"Whisper ASR unreachable — {message}");
 
                 RefreshTray();
             }
 
             if (!manual && outage)
             {
-                Notify("WhisperLive unreachable", message, NotifyKind.Warning);
-                _ = CreateOutageTaskAsync("WhisperLive", message);
+                Notify("Whisper ASR unreachable", message, NotifyKind.Warning);
+                _ = CreateOutageTaskAsync("Whisper ASR", message);
             }
 
             if (manual)
-                Notify(state == SpHealth.Ok ? "WhisperLive" : "WhisperLive — not reachable",
+                Notify(state == SpHealth.Ok ? "Whisper ASR" : "Whisper ASR — not reachable",
                     message, state == SpHealth.Ok ? NotifyKind.Info : NotifyKind.Error, force: true);
         }
         finally
         {
-            _whisperLiveHealthCheckInFlight = false;
+            _whisperAsrHealthCheckInFlight = false;
         }
     }
 
@@ -1848,7 +1768,7 @@ public sealed class TrayController : IDisposable
             beeperEnabled ? RunBeeperHealthCheckAsync(manual: false) : Task.CompletedTask,
             _config.Telegram.Enabled ? RunTelegramHealthCheckAsync(manual: false) : Task.CompletedTask,
             _config.AiClassifier.Enabled ? RunAiHealthCheckAsync(manual: false) : Task.CompletedTask,
-            _config.WhisperLive.Enabled ? RunWhisperLiveHealthCheckAsync(manual: false) : Task.CompletedTask);
+            _config.WhisperAsr.Enabled ? RunWhisperAsrHealthCheckAsync(manual: false) : Task.CompletedTask);
 
         var lines = new List<string> { $"Super Productivity: {DescribeHealth(_spHealth)}" };
         var allOk = _spHealth == SpHealth.Ok;
@@ -1883,10 +1803,10 @@ public sealed class TrayController : IDisposable
             allOk &= _aiHealth == SpHealth.Ok;
         }
 
-        if (_config.WhisperLive.Enabled)
+        if (_config.WhisperAsr.Enabled)
         {
-            lines.Add($"WhisperLive: {DescribeHealth(_whisperLiveHealth)}");
-            allOk &= _whisperLiveHealth == SpHealth.Ok;
+            lines.Add($"Whisper ASR: {DescribeHealth(_whisperAsrHealth)}");
+            allOk &= _whisperAsrHealth == SpHealth.Ok;
         }
 
         Notify(allOk ? "All connections OK" : "Some connections failed",
@@ -2349,76 +2269,51 @@ public sealed class TrayController : IDisposable
         SaveConfig("Telegram bot token updated");
     }
 
-    // ---- WhisperLive --------------------------------------------------
+    // ---- Whisper ASR webservice ---------------------------------------
 
-    private void ToggleWhisperLiveEnabled()
+    private void ToggleWhisperAsrEnabled()
     {
-        var cfg = _config.WhisperLive;
+        var cfg = _config.WhisperAsr;
         cfg.Enabled = !cfg.Enabled;
-        SaveConfig($"WhisperLive transcription {(cfg.Enabled ? "enabled" : "disabled")}");
+        SaveConfig($"Whisper ASR webservice {(cfg.Enabled ? "enabled" : "disabled")}");
         if (cfg.Enabled)
-            _ = RunWhisperLiveHealthCheckAsync(manual: false);
+            _ = RunWhisperAsrHealthCheckAsync(manual: false);
     }
 
-    private async Task SetWhisperLiveEndpointAsync()
+    private async Task SetWhisperAsrEndpointAsync()
     {
-        var value = await InputDialog.ShowAsync("WhisperLive server address",
-            "Enter the host and port of your local WhisperLive WebSocket server, e.g. 127.0.0.1:9090 or localhost:9090.\n" +
-            $"Current: {_config.WhisperLive.Host}:{_config.WhisperLive.Port}", masked: false);
+        var value = await InputDialog.ShowAsync("Whisper ASR server URL",
+            "Enter the URL of your onerahmet/openai-whisper-asr-webservice container, e.g. http://127.0.0.1:9000 or http://localhost:9000.\n" +
+            $"Current: {_config.WhisperAsr.BaseUrl}", masked: false);
         if (value is null || value.Trim().Length == 0) return;
 
-        var (host, port) = AppConfig.ParseEndpoint(value.Trim(), _config.WhisperLive.Port);
-        _config.WhisperLive.Host = host;
-        _config.WhisperLive.Port = port;
-        SaveConfig("WhisperLive server updated");
-        _ = RunWhisperLiveHealthCheckAsync(manual: false);
+        var trimmed = value.Trim().TrimEnd('/');
+        if (!trimmed.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+            !trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            var (host, port) = AppConfig.ParseEndpoint(trimmed, 9000);
+            trimmed = $"http://{host}:{port}";
+        }
+
+        _config.WhisperAsr.BaseUrl = trimmed;
+        SaveConfig("Whisper ASR server URL updated");
+        _ = RunWhisperAsrHealthCheckAsync(manual: false);
     }
 
-    private void ToggleWhisperLiveUseWss()
+    private void SetWhisperAsrLanguage(string language)
     {
-        var cfg = _config.WhisperLive;
-        cfg.UseWss = !cfg.UseWss;
-        SaveConfig($"WhisperLive WSS {(cfg.UseWss ? "enabled" : "disabled")}");
-        _ = RunWhisperLiveHealthCheckAsync(manual: false);
+        _config.WhisperAsr.Language = language;
+        SaveConfig(string.IsNullOrWhiteSpace(language) ? "Whisper ASR language cleared (auto-detect)" : $"Whisper ASR language = {language}");
     }
 
-    private void ToggleWhisperLiveUseVad()
+    private async Task SetWhisperAsrLanguageAsync()
     {
-        var cfg = _config.WhisperLive;
-        cfg.UseVad = !cfg.UseVad;
-        SaveConfig($"WhisperLive VAD {(cfg.UseVad ? "enabled" : "disabled")}");
-    }
-
-    private void SetWhisperLiveModel(string model)
-    {
-        _config.WhisperLive.Model = model;
-        SaveConfig(string.IsNullOrWhiteSpace(model) ? "WhisperLive model cleared (server default)" : $"WhisperLive model = {model}");
-    }
-
-    private async Task SetWhisperLiveModelAsync()
-    {
-        var value = await InputDialog.ShowAsync("WhisperLive model",
-            "Model name to request (e.g. small, base, medium, large-v3).\n" +
-            "Leave blank for default (small).", masked: false);
-        if (value is null) return;
-
-        SetWhisperLiveModel(value.Trim());
-    }
-
-    private void SetWhisperLiveLanguage(string language)
-    {
-        _config.WhisperLive.Language = language;
-        SaveConfig(string.IsNullOrWhiteSpace(language) ? "WhisperLive language cleared (auto-detect)" : $"WhisperLive language = {language}");
-    }
-
-    private async Task SetWhisperLiveLanguageAsync()
-    {
-        var value = await InputDialog.ShowAsync("WhisperLive language",
+        var value = await InputDialog.ShowAsync("Whisper ASR language",
             "Spoken language code to request (e.g. 'en', 'es', 'de').\n" +
             "Leave blank for automatic language detection.", masked: false);
         if (value is null) return;
 
-        SetWhisperLiveLanguage(value.Trim());
+        SetWhisperAsrLanguage(value.Trim());
     }
 
     // ---- Web search -----------------------------------------------------

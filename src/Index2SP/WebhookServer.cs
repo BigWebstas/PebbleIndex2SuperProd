@@ -151,28 +151,28 @@ public sealed class WebhookServer : IAsyncDisposable
 
             // Pebble normally transcribes on-device; this only fires for a genuinely audio-only
             // webhook, and never overrides a transcription Pebble already sent.
-            if (string.IsNullOrWhiteSpace(payload.Transcription) && audio is not null && _config.WhisperLive.Enabled)
+            if (string.IsNullOrWhiteSpace(payload.Transcription) && audio is not null && _config.WhisperAsr.Enabled)
             {
                 try
                 {
                     using var audioBytes = new MemoryStream();
                     await audio.CopyToAsync(audioBytes, ctx.RequestAborted);
-                    using var whisperLive = new WhisperLiveClient(_config.WhisperLive);
+                    using var whisperAsr = new WhisperAsrClient(_config.WhisperAsr);
                     var audioMemory = audioBytes.GetBuffer().AsMemory(0, (int)audioBytes.Length);
-                    var text = await whisperLive.TranscribeAsync(audioMemory, audio.FileName, ctx.RequestAborted);
+                    var text = await whisperAsr.TranscribeAsync(audioMemory, audio.FileName, ctx.RequestAborted);
                     if (text is not null)
                     {
-                        _log.Info($"WhisperLive transcribed audio from {remote} ({audioBytes.Length} bytes): {text.Length} chars");
+                        _log.Info($"Whisper ASR transcribed audio from {remote} ({audioBytes.Length} bytes): {text.Length} chars");
                         payload = payload with { Transcription = text };
                     }
                     else
                     {
-                        _log.Warn("WhisperLive returned no usable text — falling back to normal handling");
+                        _log.Warn("Whisper ASR returned no usable text — falling back to normal handling");
                     }
                 }
-                catch (Exception ex) when (ex is WhisperLiveApiException or WhisperLiveAudioException or WebSocketException or IOException or TaskCanceledException)
+                catch (Exception ex) when (ex is WhisperAsrApiException or WhisperAsrAudioException or HttpRequestException or IOException or TaskCanceledException)
                 {
-                    _log.Warn($"WhisperLive transcription failed, falling back to normal handling: {ex.Message}");
+                    _log.Warn($"Whisper ASR transcription failed, falling back to normal handling: {ex.Message}");
                 }
             }
         }

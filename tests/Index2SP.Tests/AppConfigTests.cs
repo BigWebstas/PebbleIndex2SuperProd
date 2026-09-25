@@ -131,63 +131,78 @@ public class AppConfigTests : IDisposable
     [Theory]
     [InlineData(1, 5)]
     [InlineData(999, 120)]
-    public void Normalize_ClampsWhisperLiveTimeoutSeconds(int input, int expected)
+    public void Normalize_ClampsWhisperAsrTimeoutSeconds(int input, int expected)
     {
-        File.WriteAllText(ConfigPath, $$"""{ "whisperLive": { "timeoutSeconds": {{input}} } }""");
+        File.WriteAllText(ConfigPath, $$"""{ "whisperAsr": { "timeoutSeconds": {{input}} } }""");
 
         var config = AppConfig.LoadOrCreate(ConfigPath);
 
-        Assert.Equal(expected, config.WhisperLive.TimeoutSeconds);
+        Assert.Equal(expected, config.WhisperAsr.TimeoutSeconds);
     }
 
     [Fact]
-    public void Normalize_DefaultsBlankWhisperLiveEndpoint()
+    public void Normalize_DefaultsBlankWhisperAsrEndpoint()
     {
-        File.WriteAllText(ConfigPath, """{ "whisperLive": { "host": "", "port": 0 } }""");
+        File.WriteAllText(ConfigPath, """{ "whisperAsr": { "baseUrl": "" } }""");
 
         var config = AppConfig.LoadOrCreate(ConfigPath);
 
-        Assert.Equal("127.0.0.1", config.WhisperLive.Host);
-        Assert.Equal(9090, config.WhisperLive.Port);
-        Assert.Equal("ws://127.0.0.1:9090", config.WhisperLive.BaseUrl);
+        Assert.Equal("http://127.0.0.1:9000", config.WhisperAsr.BaseUrl);
+        Assert.Equal("127.0.0.1", config.WhisperAsr.Host);
+        Assert.Equal(9000, config.WhisperAsr.Port);
+    }
+
+    [Fact]
+    public void Normalize_MigratesLegacyWhisperLiveConfig()
+    {
+        File.WriteAllText(ConfigPath, """{ "whisperLive": { "enabled": true, "host": "192.168.1.70", "port": 9090, "timeoutSeconds": 25 } }""");
+
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.True(config.WhisperAsr.Enabled);
+        Assert.Equal("http://192.168.1.70:9090", config.WhisperAsr.BaseUrl);
+        Assert.Equal("192.168.1.70", config.WhisperAsr.Host);
+        Assert.Equal(9090, config.WhisperAsr.Port);
+        Assert.Equal(25, config.WhisperAsr.TimeoutSeconds);
     }
 
     [Fact]
     public void Normalize_MigratesLegacyWhisperConfig()
     {
-        File.WriteAllText(ConfigPath, """{ "whisper": { "enabled": true, "baseUrl": "tcp://192.168.1.50:10300", "model": "tiny", "timeoutSeconds": 45 } }""");
+        File.WriteAllText(ConfigPath, """{ "whisper": { "enabled": true, "baseUrl": "http://192.168.1.50:9000", "language": "es", "timeoutSeconds": 45 } }""");
 
         var config = AppConfig.LoadOrCreate(ConfigPath);
 
-        Assert.True(config.WhisperLive.Enabled);
-        Assert.Equal("192.168.1.50", config.WhisperLive.Host);
-        Assert.Equal(10300, config.WhisperLive.Port);
-        Assert.Equal("tiny", config.WhisperLive.Model);
-        Assert.Equal(45, config.WhisperLive.TimeoutSeconds);
+        Assert.True(config.WhisperAsr.Enabled);
+        Assert.Equal("http://192.168.1.50:9000", config.WhisperAsr.BaseUrl);
+        Assert.Equal("192.168.1.50", config.WhisperAsr.Host);
+        Assert.Equal(9000, config.WhisperAsr.Port);
+        Assert.Equal("es", config.WhisperAsr.Language);
+        Assert.Equal(45, config.WhisperAsr.TimeoutSeconds);
     }
 
     [Fact]
     public void Normalize_MigratesLegacyWyomingConfig()
     {
-        File.WriteAllText(ConfigPath, """{ "wyoming": { "enabled": true, "host": "192.168.1.60", "port": 10300, "model": "base", "timeoutSeconds": 40 } }""");
+        File.WriteAllText(ConfigPath, """{ "wyoming": { "enabled": true, "host": "192.168.1.60", "port": 10300, "timeoutSeconds": 40 } }""");
 
         var config = AppConfig.LoadOrCreate(ConfigPath);
 
-        Assert.True(config.WhisperLive.Enabled);
-        Assert.Equal("192.168.1.60", config.WhisperLive.Host);
-        Assert.Equal(10300, config.WhisperLive.Port);
-        Assert.Equal("base", config.WhisperLive.Model);
-        Assert.Equal(40, config.WhisperLive.TimeoutSeconds);
+        Assert.True(config.WhisperAsr.Enabled);
+        Assert.Equal("http://192.168.1.60:10300", config.WhisperAsr.BaseUrl);
+        Assert.Equal("192.168.1.60", config.WhisperAsr.Host);
+        Assert.Equal(10300, config.WhisperAsr.Port);
+        Assert.Equal(40, config.WhisperAsr.TimeoutSeconds);
     }
 
     [Fact]
     public void ParseEndpoint_HandlesVariousFormats()
     {
-        Assert.Equal(("127.0.0.1", 9090), AppConfig.ParseEndpoint(""));
-        Assert.Equal(("192.168.1.10", 9090), AppConfig.ParseEndpoint("192.168.1.10"));
+        Assert.Equal(("127.0.0.1", 9000), AppConfig.ParseEndpoint(""));
+        Assert.Equal(("192.168.1.10", 9000), AppConfig.ParseEndpoint("192.168.1.10"));
         Assert.Equal(("192.168.1.10", 10400), AppConfig.ParseEndpoint("192.168.1.10:10400"));
-        Assert.Equal(("10.0.0.1", 9090), AppConfig.ParseEndpoint("ws://10.0.0.1:9090"));
-        Assert.Equal(("localhost", 9090), AppConfig.ParseEndpoint("http://localhost:9090/"));
+        Assert.Equal(("10.0.0.1", 9000), AppConfig.ParseEndpoint("http://10.0.0.1:9000"));
+        Assert.Equal(("localhost", 9000), AppConfig.ParseEndpoint("http://localhost:9000/"));
     }
 
     [Fact]
