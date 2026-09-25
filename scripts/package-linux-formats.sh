@@ -33,6 +33,9 @@ if [ ! -x "$publish_dir/Index2SP" ]; then
   echo "==> publish linux self-contained (v$version)"
   dotnet publish "$project" -c Release -r "$rid" --self-contained true \
     -o "$publish_dir" "/p:Version=$version"
+  if [ -d "$publish_dir/runtimes" ]; then
+    find "$publish_dir/runtimes" -mindepth 1 -maxdepth 1 -type d ! -name "$rid" -exec rm -rf {} +
+  fi
 fi
 chmod +x "$publish_dir/Index2SP"
 
@@ -43,6 +46,9 @@ build_appimage() {
   rm -rf "$appdir"
   mkdir -p "$appdir/usr/bin"
   cp "$publish_dir/Index2SP" "$appdir/usr/bin/index2sp"
+  if [ -d "$publish_dir/runtimes" ]; then
+    cp -r "$publish_dir/runtimes" "$appdir/usr/bin/"
+  fi
   cp "$icon" "$appdir/index2sp.png"
   sed "s|^Exec=.*|Exec=index2sp|" "$desktop" > "$appdir/index2sp.desktop"
   cat > "$appdir/AppRun" <<'RUNEOF'
@@ -69,6 +75,9 @@ build_fpm_package() {
   mkdir -p "$pkgroot/usr/bin" "$pkgroot/usr/share/applications" \
            "$pkgroot/usr/share/icons/hicolor/256x256/apps"
   install -m 0755 "$publish_dir/Index2SP" "$pkgroot/usr/bin/index2sp"
+  if [ -d "$publish_dir/runtimes" ]; then
+    cp -r "$publish_dir/runtimes" "$pkgroot/usr/bin/"
+  fi
   sed "s|^Exec=.*|Exec=index2sp|" "$desktop" > "$pkgroot/usr/share/applications/index2sp.desktop"
   install -m 0644 "$icon" "$pkgroot/usr/share/icons/hicolor/256x256/apps/index2sp.png"
 

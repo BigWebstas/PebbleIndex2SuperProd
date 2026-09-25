@@ -21,6 +21,10 @@ pack() {
   dotnet publish "$project" -c Release -r "$rid" --self-contained "$self_contained" \
     -o "$out" "/p:Version=$version"
 
+  if [ -d "$out/runtimes" ]; then
+    find "$out/runtimes" -mindepth 1 -maxdepth 1 -type d ! -name "$rid" -exec rm -rf {} +
+  fi
+
   [ -x "$out/Index2SP" ] || { echo "ERROR: $out/Index2SP missing"; exit 1; }
   chmod +x "$out/Index2SP"
   cp "$root/README.md" "$out/"

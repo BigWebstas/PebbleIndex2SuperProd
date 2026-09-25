@@ -69,6 +69,14 @@ foreach ($variant in $targets) {
         "/p:Version=$Version"
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $variant (exit $LASTEXITCODE)" }
 
+    # Retain only the target runtime in runtimes/ (clean out foreign OS binaries)
+    $runtimesDir = Join-Path $publishDir 'runtimes'
+    if (Test-Path $runtimesDir) {
+        Get-ChildItem -Directory $runtimesDir |
+            Where-Object { $_.Name -ne $Runtime } |
+            Remove-Item -Recurse -Force
+    }
+
     $exe = Join-Path $publishDir 'Index2SP.exe'
     if (-not (Test-Path $exe)) { throw "publish did not produce $exe" }
 

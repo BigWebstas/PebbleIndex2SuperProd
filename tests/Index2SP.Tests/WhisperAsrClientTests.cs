@@ -36,6 +36,40 @@ public class WhisperAsrClientTests
     }
 
     [Fact]
+    public void EmbeddedWhisperEngine_GetCurrentRuntimeIdentifier_ReturnsValidRid()
+    {
+        var rid = EmbeddedWhisperEngine.GetCurrentRuntimeIdentifier();
+        Assert.False(string.IsNullOrWhiteSpace(rid));
+        Assert.Contains(rid, new[] { "win-x64", "win-arm64", "win-x86", "linux-x64", "linux-arm64", "linux-arm", "macos-x64", "macos-arm64" });
+    }
+
+    [Fact]
+    public void EmbeddedWhisperEngine_GetNativeLibraryFileName_ReturnsExpected()
+    {
+        var libName = EmbeddedWhisperEngine.GetNativeLibraryFileName();
+        if (OperatingSystem.IsWindows()) Assert.Equal("whisper.dll", libName);
+        else if (OperatingSystem.IsMacOS()) Assert.Equal("libwhisper.dylib", libName);
+        else Assert.Equal("libwhisper.so", libName);
+    }
+
+    [Fact]
+    public void EmbeddedWhisperEngine_HasEmbeddedNativeResourcesForWindowsAndLinux()
+    {
+        var asm = typeof(EmbeddedWhisperEngine).Assembly;
+        var names = asm.GetManifestResourceNames();
+        Assert.Contains(names, n => n.StartsWith("whisper_runtimes.win-x64.whisper.dll", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(names, n => n.StartsWith("whisper_runtimes.linux-x64.libwhisper.so", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void EmbeddedWhisperEngine_EnsureNativeRuntimeConfigured_ConfiguresLibraryPath()
+    {
+        EmbeddedWhisperEngine.EnsureNativeRuntimeConfigured();
+        Assert.False(string.IsNullOrWhiteSpace(Whisper.net.LibraryLoader.RuntimeOptions.LibraryPath));
+        Assert.EndsWith(Path.DirectorySeparatorChar.ToString(), Whisper.net.LibraryLoader.RuntimeOptions.LibraryPath);
+    }
+
+    [Fact]
     public void WhisperAsrConfig_Mode_InfersEmbeddedByDefault()
     {
         var cfg = new AppConfig.WhisperAsrConfig();

@@ -1,7 +1,10 @@
 using System.Diagnostics;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using Whisper.net;
 using Whisper.net.Ggml;
+using Whisper.net.LibraryLoader;
 
 namespace Index2SP;
 
@@ -13,6 +16,8 @@ namespace Index2SP;
 public static class EmbeddedWhisperEngine
 {
     private static readonly SemaphoreSlim Lock = new(1, 1);
+    private static readonly object RuntimeConfigLock = new();
+    private static bool _runtimeConfigured;
     private static WhisperFactory? _cachedFactory;
     private static string? _cachedModelPath;
 
@@ -134,6 +139,8 @@ public static class EmbeddedWhisperEngine
             _cachedFactory = null;
             _cachedModelPath = null;
 
+            EnsureNativeRuntimeConfigured(log);
+
             log?.Info($"Embedded Whisper: loading model weights from {modelPath}...");
             var sw = Stopwatch.StartNew();
             _cachedFactory = WhisperFactory.FromPath(modelPath);
@@ -145,6 +152,202 @@ public static class EmbeddedWhisperEngine
         finally
         {
             Lock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Configures Whisper.net native library loading.
+    /// Probes local directories (app directory, process directory, user data directory)
+    /// and extracts embedded native libraries for the current platform/architecture if missing.
+    /// </summary>
+    public static void EnsureNativeRuntimeConfigured(Logger? log = null)
+    {
+        if (_runtimeConfigured) return;
+        lock (RuntimeConfigLock)
+        {
+            if (_runtimeConfigured) return;
+
+            try
+            {
+                var rid = GetCurrentRuntimeIdentifier();
+                var nativeLibName = GetNativeLibraryFileName();
+
+                log?.Info($"Embedded Whisper: checking native runtime libraries for RID '{rid}'...");
+
+                // 1. Probe candidate directories where runtimes/{rid}/{nativeLibName} might already exist
+                var candidates = new List<string>();
+
+                if (!string.IsNullOrWhiteSpace(AppContext.BaseDirectory))
+                    candidates.Add(AppContext.BaseDirectory);
+
+                var procPath = Environment.ProcessPath;
+                if (!string.IsNullOrWhiteSpace(procPath))
+                {
+                    var procDir = Path.GetDirectoryName(procPath);
+                    if (!string.IsNullOrWhiteSpace(procDir) && !candidates.Contains(procDir, StringComparer.OrdinalIgnoreCase))
+                        candidates.Add(procDir);
+                }
+
+                // Also check user config directory (%APPDATA%\Index2SP or ~/.config/Index2SP)
+                var userConfigDir = AppConfig.ConfigDirectory;
+                if (!candidates.Contains(userConfigDir, StringComparer.OrdinalIgnoreCase))
+                    candidates.Add(userConfigDir);
+
+                string? selectedBaseDir = null;
+                foreach (var dir in candidates)
+                {
+                    var libPath = Path.Combine(dir, "runtimes", rid, nativeLibName);
+                    if (File.Exists(libPath))
+                    {
+                        selectedBaseDir = dir;
+                        log?.Info($"Embedded Whisper: found native library at {libPath}");
+                        break;
+                    }
+                }
+
+                // 2. If not found in any candidate directory, extract from embedded resources into userConfigDir
+                if (selectedBaseDir == null)
+                {
+                    log?.Info($"Embedded Whisper: native library '{nativeLibName}' not found on disk. Extracting from embedded resources...");
+                    var extracted = ExtractEmbeddedRuntimes(rid, userConfigDir, log);
+                    if (extracted)
+                    {
+                        selectedBaseDir = userConfigDir;
+                    }
+                }
+
+                // 3. Configure Whisper.net RuntimeOptions.LibraryPath
+                if (selectedBaseDir != null)
+                {
+                    // Whisper.net's NativeLibraryLoader calls Path.GetDirectoryName on LibraryPath.
+                    // A trailing separator ensures GetDirectoryName doesn't strip the last directory segment.
+                    var normalizedPath = selectedBaseDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                                         + Path.DirectorySeparatorChar;
+                    RuntimeOptions.LibraryPath = normalizedPath;
+                    log?.Info($"Embedded Whisper: RuntimeOptions.LibraryPath configured to '{normalizedPath}'");
+                }
+                else
+                {
+                    log?.Warn($"Embedded Whisper: unable to locate or extract native libraries for '{rid}'. Whisper.net default loader will be used.");
+                }
+            }
+            catch (Exception ex)
+            {
+                log?.Warn($"Embedded Whisper: failed while configuring native runtime paths: {ex.Message}");
+            }
+            finally
+            {
+                _runtimeConfigured = true;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Returns the .NET runtime identifier (RID) for the current OS and processor architecture.
+    /// </summary>
+    public static string GetCurrentRuntimeIdentifier()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return RuntimeInformation.ProcessArchitecture switch
+            {
+                Architecture.X64 => "win-x64",
+                Architecture.Arm64 => "win-arm64",
+                Architecture.X86 => "win-x86",
+                _ => "win-x64"
+            };
+        }
+        if (OperatingSystem.IsLinux())
+        {
+            return RuntimeInformation.ProcessArchitecture switch
+            {
+                Architecture.X64 => "linux-x64",
+                Architecture.Arm64 => "linux-arm64",
+                Architecture.Arm => "linux-arm",
+                _ => "linux-x64"
+            };
+        }
+        if (OperatingSystem.IsMacOS())
+        {
+            return RuntimeInformation.ProcessArchitecture switch
+            {
+                Architecture.Arm64 => "macos-arm64",
+                _ => "macos-x64"
+            };
+        }
+        return "unknown";
+    }
+
+    /// <summary>
+    /// Returns the primary native whisper library filename for the current OS.
+    /// </summary>
+    public static string GetNativeLibraryFileName()
+    {
+        if (OperatingSystem.IsWindows()) return "whisper.dll";
+        if (OperatingSystem.IsMacOS()) return "libwhisper.dylib";
+        return "libwhisper.so";
+    }
+
+    private static bool ExtractEmbeddedRuntimes(string rid, string baseDir, Logger? log)
+    {
+        try
+        {
+            var asm = typeof(EmbeddedWhisperEngine).Assembly;
+            var prefix = "whisper_runtimes." + rid + ".";
+            var targetDir = Path.Combine(baseDir, "runtimes", rid);
+            Directory.CreateDirectory(targetDir);
+
+            var resourceNames = asm.GetManifestResourceNames()
+                .Where(n => n.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (resourceNames.Count == 0)
+            {
+                log?.Warn($"Embedded Whisper: no embedded native resources found for '{rid}' (prefix '{prefix}')");
+                return false;
+            }
+
+            foreach (var resName in resourceNames)
+            {
+                var fileName = resName.Substring(prefix.Length);
+                var destPath = Path.Combine(targetDir, fileName);
+
+                using var stream = asm.GetManifestResourceStream(resName);
+                if (stream == null) continue;
+
+                if (File.Exists(destPath) && new FileInfo(destPath).Length == stream.Length)
+                {
+                    continue;
+                }
+
+                var tempPath = destPath + $".{Guid.NewGuid():N}.tmp";
+                using (var fileStream = File.Create(tempPath))
+                {
+                    stream.CopyTo(fileStream);
+                }
+
+                if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+                {
+                    try
+                    {
+                        File.SetUnixFileMode(tempPath,
+                            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                            UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+                            UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+                    }
+                    catch { }
+                }
+
+                File.Move(tempPath, destPath, overwrite: true);
+                log?.Info($"Embedded Whisper: extracted native library {fileName} ({stream.Length / 1024} KB)");
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            log?.Warn($"Embedded Whisper: error extracting embedded runtimes: {ex.Message}");
+            return false;
         }
     }
 
