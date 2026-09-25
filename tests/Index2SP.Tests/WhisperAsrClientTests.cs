@@ -293,6 +293,55 @@ public class WhisperAsrClientTests
         Assert.Contains("Internal GPU error", ex.Message);
     }
 
+    [Theory]
+    [InlineData("""{"text": "Hello world"}""", "Hello world")]
+    [InlineData("""{"transcription": "Custom transcription"}""", "Custom transcription")]
+    [InlineData("""{"result": "Result text"}""", "Result text")]
+    [InlineData("""{"segments": [{"text": "Part one"}, {"text": "Part two"}]}""", "Part one Part two")]
+    [InlineData("""[{"text": "Segment A"}, {"text": "Segment B"}]""", "Segment A Segment B")]
+    [InlineData("Plain text transcription", "Plain text transcription")]
+    public void ExtractTranscriptionText_ParsesVariousFormats(string input, string expected)
+    {
+        var text = WhisperAsrClient.ExtractTranscriptionText(input);
+        Assert.Equal(expected, text);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("""{"text": ""}""")]
+    [InlineData("""{"text": "   "}""")]
+    [InlineData("""{"segments": []}""")]
+    [InlineData("""{"language": "en"}""")]
+    public void ExtractTranscriptionText_ReturnsNullOnBlank(string input)
+    {
+        var text = WhisperAsrClient.ExtractTranscriptionText(input);
+        Assert.Null(text);
+    }
+
+    [Fact]
+    public void DetectAudioMetadata_DetectsMagicBytesAndExtensions()
+    {
+        var wavBytes = new byte[12];
+        wavBytes[0] = (byte)'R'; wavBytes[1] = (byte)'I'; wavBytes[2] = (byte)'F'; wavBytes[3] = (byte)'F';
+        wavBytes[8] = (byte)'W'; wavBytes[9] = (byte)'A'; wavBytes[10] = (byte)'V'; wavBytes[11] = (byte)'E';
+
+        var (wavName, wavMime) = WhisperAsrClient.DetectAudioMetadata(wavBytes, null);
+        Assert.Equal("audio.wav", wavName);
+        Assert.Equal("audio/wav", wavMime);
+
+        var m4aBytes = new byte[12];
+        m4aBytes[4] = (byte)'f'; m4aBytes[5] = (byte)'t'; m4aBytes[6] = (byte)'y'; m4aBytes[7] = (byte)'p';
+
+        var (m4aName, m4aMime) = WhisperAsrClient.DetectAudioMetadata(m4aBytes, null);
+        Assert.Equal("audio.m4a", m4aName);
+        Assert.Equal("audio/m4a", m4aMime);
+
+        var (customName, customMime) = WhisperAsrClient.DetectAudioMetadata(new byte[10], "recording.mp3");
+        Assert.Equal("recording.mp3", customName);
+        Assert.Equal("audio/mpeg", customMime);
+    }
+
     private static byte[] CreateWavBytes(byte[] pcmData, int sampleRate, short channels, short bitsPerSample, short audioFormat = 1)
     {
         using var ms = new MemoryStream();

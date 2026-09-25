@@ -157,17 +157,17 @@ public sealed class WebhookServer : IAsyncDisposable
                 {
                     using var audioBytes = new MemoryStream();
                     await audio.CopyToAsync(audioBytes, ctx.RequestAborted);
-                    using var whisperAsr = new WhisperAsrClient(_config.WhisperAsr);
+                    using var whisperAsr = new WhisperAsrClient(_config.WhisperAsr, _log);
                     var audioMemory = audioBytes.GetBuffer().AsMemory(0, (int)audioBytes.Length);
                     var text = await whisperAsr.TranscribeAsync(audioMemory, audio.FileName, ctx.RequestAborted);
                     if (text is not null)
                     {
-                        _log.Info($"Whisper ASR transcribed audio from {remote} ({audioBytes.Length} bytes): {text.Length} chars");
+                        _log.Info($"Whisper ASR transcribed audio from {remote} ({audioBytes.Length} bytes): \"{text}\"");
                         payload = payload with { Transcription = text };
                     }
                     else
                     {
-                        _log.Warn("Whisper ASR returned no usable text — falling back to normal handling");
+                        _log.Warn($"Whisper ASR returned no usable text from {remote} ({audioBytes.Length} bytes audio) — falling back to normal handling (will return 422 if no text)");
                     }
                 }
                 catch (Exception ex) when (ex is WhisperAsrApiException or WhisperAsrAudioException or HttpRequestException or IOException or TaskCanceledException)
