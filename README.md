@@ -85,12 +85,22 @@ Two setups need an extra step first:
   the bot's `getUpdates` response (or ask [@userinfobot](https://t.me/userinfobot)) for that
   chat's ID — set it under **Web search** and/or **Webhook receipt**.
 
-**Whisper speech-to-text** transcribes audio for webhooks where Pebble sent voice audio without a transcription:
-- **Embedded mode (`mode: "embedded"`, default)**: Runs `whisper.cpp` directly in-process via `Whisper.net` with zero external dependencies, no Python, and no Docker. On first run, it automatically downloads your selected model (e.g. `tiny.en` ~75MB, `base.en` ~140MB, or `small.en` ~460MB) and caches it in `%APPDATA%\Index2SP\models\` / `~/.config/Index2SP/models/`.
-- **Remote mode (`mode: "remote"`)**: Connects over HTTP REST to an external speech-to-text server such as `onerahmet/openai-whisper-asr-webservice` (e.g. `http://127.0.0.1:9000` or a dedicated GPU server):
-  ```bash
-  docker run -d -p 9000:9000 -e ASR_MODEL=base onerahmet/openai-whisper-asr-webservice:latest
-  ```
+**Speech-to-text (Whisper & NVIDIA Parakeet)** transcribes audio for webhooks where Pebble sent voice audio without a transcription:
+- **Embedded mode (`mode: "embedded"`, default)**: Runs `whisper.cpp` directly in-process via `Whisper.net` with zero external dependencies, no Python, and no Docker. On first run, it automatically downloads your selected model (e.g. `tiny.en` ~75MB, `base.en` ~140MB, or `small.en` ~460MB) and caches it in `%APPDATA%\Index2SP\models\` / `~/.config/Index2SP/models/`. Includes automatic NoAVX fallback for platforms lacking AVX instructions.
+- **Remote mode (`mode: "remote"`)**: Connects over HTTP REST to an external speech-to-text server:
+  - **NVIDIA Parakeet** (OpenAI-compatible `/v1/audio/transcriptions`):
+    ```bash
+    # GPU (CUDA):
+    docker run -d --name parakeet --gpus all -p 5092:5092 ghcr.io/achetronic/parakeet:latest-cuda
+    # CPU:
+    docker run -d --name parakeet -p 5092:5092 ghcr.io/achetronic/parakeet:latest
+    ```
+    Set `baseUrl: "http://127.0.0.1:5092"`, `model: "parakeet-tdt-0.6b"`, and optional `apiKey` if secured.
+  - **Whisper ASR webservice** (`/asr` endpoint):
+    ```bash
+    docker run -d -p 9000:9000 -e ASR_MODEL=base onerahmet/openai-whisper-asr-webservice:latest
+    ```
+    Set `baseUrl: "http://127.0.0.1:9000"`.
 When local ffmpeg is available, Index2SP automatically pre-decodes compressed Pebble `.m4a` files into clean 16kHz mono WAV audio before transcription. It's a fallback only: Pebble's own transcription is always used when present, and this only fires for an audio-only webhook.
 
 **Web search** ("search the web for...", "google...", "what is the latest version of X") searches

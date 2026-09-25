@@ -70,6 +70,15 @@ public sealed class AppConfig
     [JsonPropertyName("whisperAsr")]
     public WhisperAsrConfig WhisperAsr { get; set; } = new();
 
+    /// <summary>Alias for speech-to-text configuration (e.g. Parakeet or Whisper).</summary>
+    [JsonPropertyName("stt")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public WhisperAsrConfig? SttConfigSetting
+    {
+        get => null;
+        set { if (value != null) WhisperAsr = value; }
+    }
+
     /// <summary>Backward-compatibility alias for configurations referencing "whisperLive".</summary>
     [JsonPropertyName("whisperLive")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -207,6 +216,18 @@ public sealed class AppConfig
             get => BaseUrl;
             set => BaseUrl = value;
         }
+
+        /// <summary>
+        /// Remote API protocol/format: "auto" (default, tries OpenAI /v1/audio/transcriptions then /asr),
+        /// "openai" (/v1/audio/transcriptions, standard for Parakeet servers, Speaches, vLLM, OpenAI),
+        /// or "asr" (onerahmet/openai-whisper-asr-webservice /asr).
+        /// </summary>
+        public string Format { get; set; } = "auto";
+
+        /// <summary>
+        /// Optional API key or bearer token if the remote ASR service requires authentication.
+        /// </summary>
+        public string? ApiKey { get; set; }
 
         /// <summary>Spoken language code (e.g. "en", "es", "de") to request. Blank uses auto-detection.</summary>
         public string Language { get; set; } = "";
@@ -452,7 +473,7 @@ public sealed class AppConfig
     [JsonIgnore]
     public static string DefaultPath => Path.Combine(ConfigDirectory, "config.json");
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    public static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -615,6 +636,14 @@ public sealed class AppConfig
             }
             WhisperAsr.BaseUrl = WhisperAsr.BaseUrl.TrimEnd('/');
         }
+        WhisperAsr.Format = WhisperAsr.Format?.Trim().ToLowerInvariant() switch
+        {
+            "openai" or "parakeet" => "openai",
+            "asr" or "webservice" => "asr",
+            _ => "auto"
+        };
+        if (string.IsNullOrWhiteSpace(WhisperAsr.ApiKey)) WhisperAsr.ApiKey = null;
+        else WhisperAsr.ApiKey = WhisperAsr.ApiKey.Trim();
         WebSearch ??= new WebSearchConfig();
         WebSearch.MaxUses = Math.Clamp(WebSearch.MaxUses, 1, 10);
         WebSearch.SendDelaySeconds = Math.Clamp(WebSearch.SendDelaySeconds, 0, 60);

@@ -629,6 +629,154 @@ public class WhisperAsrClientTests
         Assert.True(decoded.Data.Length > 0);
     }
 
+    [Fact]
+    public async Task TranscribeAsync_OpenAiParakeetFormat_PostsFileAndModelWithAuth()
+    {
+        using var server = new MockHttpServer();
+        var port = server.Start((req, res) =>
+        {
+            Assert.Equal("POST", req.HttpMethod);
+            Assert.Equal("/v1/audio/transcriptions", req.Url?.AbsolutePath);
+            Assert.Equal("Bearer test-secret-token", req.Headers["Authorization"]);
+            Assert.True(req.ContentType?.StartsWith("multipart/form-data"));
+
+            using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
+            var body = reader.ReadToEnd();
+            Assert.Contains("file", body);
+            Assert.Contains("model", body);
+            Assert.Contains("parakeet-tdt-0.6b", body);
+            Assert.Contains("response_format", body);
+
+            res.StatusCode = 200;
+            res.ContentType = "application/json";
+            var bytes = Encoding.UTF8.GetBytes("""{"text":"Parakeet recognized speech successfully"}""");
+            res.OutputStream.Write(bytes);
+            res.Close();
+        });
+
+        var config = new AppConfig.WhisperAsrConfig
+        {
+            BaseUrl = $"http://127.0.0.1:{port}",
+            Format = "openai",
+            Model = "parakeet-tdt-0.6b",
+            ApiKey = "test-secret-token",
+            TimeoutSeconds = 5,
+        };
+
+        using var client = new WhisperAsrClient(config);
+        var audio = new byte[100];
+        var result = await client.TranscribeAsync(audio, "sample.wav");
+
+        Assert.Equal("Parakeet recognized speech successfully", result);
+    }
+
+    [Fact]
+    public async Task TranscribeAsync_AutoFallback_RecoversFrom404OnOpenAiEndpoint()
+    {
+        using var server = new MockHttpServer();
+        var port = server.Start((req, res) =>
+        {
+            if (req.Url?.AbsolutePath == "/v1/audio/transcriptions")
+            {
+                res.StatusCode = 404;
+                res.Close();
+                return;
+            }
+
+            if (req.Url?.AbsolutePath == "/asr")
+            {
+                res.StatusCode = 200;
+                res.ContentType = "application/json";
+                var bytes = Encoding.UTF8.GetBytes("""{"text":"Fallback to /asr succeeded"}""");
+                res.OutputStream.Write(bytes);
+                res.Close();
+                return;
+            }
+
+            res.StatusCode = 404;
+            res.Close();
+        });
+
+        var config = new AppConfig.WhisperAsrConfig
+        {
+            BaseUrl = $"http://127.0.0.1:{port}",
+            Format = "auto",
+            TimeoutSeconds = 5,
+        };
+
+        using var client = new WhisperAsrClient(config);
+        var audio = new byte[100];
+        var result = await client.TranscribeAsync(audio, "sample.wav");
+
+        Assert.Equal("Fallback to /asr succeeded", result);
+    }
+
+    [Fact]
+    public async Task TestAsync_SucceedsOnV1ModelsEndpoint()
+    {
+        using var server = new MockHttpServer();
+        var port = server.Start((req, res) =>
+        {
+            if (req.Url?.AbsolutePath == "/health")
+            {
+                res.StatusCode = 404;
+                res.Close();
+                return;
+            }
+
+            if (req.Url?.AbsolutePath == "/v1/models")
+            {
+                res.StatusCode = 200;
+                res.ContentType = "application/json";
+                var bytes = Encoding.UTF8.GetBytes("""{"data":[{"id":"parakeet-tdt-0.6b"}]}""");
+                res.OutputStream.Write(bytes);
+                res.Close();
+                return;
+            }
+
+            res.StatusCode = 404;
+            res.Close();
+        });
+
+        var config = new AppConfig.WhisperAsrConfig
+        {
+            BaseUrl = $"http://127.0.0.1:{port}",
+            TimeoutSeconds = 5,
+        };
+
+        using var client = new WhisperAsrClient(config);
+        var result = await client.TestAsync();
+
+        Assert.Contains("OK", result);
+        Assert.Contains("/v1/models", result);
+    }
+
+    [Fact]
+    public void AppConfig_SttAlias_DeserializesCorrectly()
+    {
+        const string json = """
+        {
+            "stt": {
+                "enabled": true,
+                "mode": "remote",
+                "format": "openai",
+                "baseUrl": "http://192.168.1.186:5092",
+                "model": "parakeet-tdt-0.6b",
+                "apiKey": "my-secret-key"
+            }
+        }
+        """;
+
+        var config = System.Text.Json.JsonSerializer.Deserialize<AppConfig>(json, AppConfig.JsonOptions);
+        Assert.NotNull(config);
+        Assert.True(config.WhisperAsr.Enabled);
+        Assert.Equal("remote", config.WhisperAsr.Mode);
+        Assert.Equal("openai", config.WhisperAsr.Format);
+        Assert.Equal("http://192.168.1.186:5092", config.WhisperAsr.BaseUrl);
+        Assert.Equal("parakeet-tdt-0.6b", config.WhisperAsr.Model);
+        Assert.Equal("my-secret-key", config.WhisperAsr.ApiKey);
+    }
+
     private static byte[] CreateWavBytes(byte[] pcmData, int sampleRate, short channels, short bitsPerSample, short audioFormat = 1)
     {
         using var ms = new MemoryStream();
@@ -683,7 +831,21 @@ public class WhisperAsrClientTests
                     try
                     {
                         var context = await _listener.GetContextAsync();
-                        _handler?.Invoke(context.Request, context.Response);
+                        try
+                        {
+                            _handler?.Invoke(context.Request, context.Response);
+                        }
+                        catch (Exception ex)
+                        {
+                            try
+                            {
+                                context.Response.StatusCode = 500;
+                                var errBytes = Encoding.UTF8.GetBytes(ex.ToString());
+                                context.Response.OutputStream.Write(errBytes);
+                                context.Response.Close();
+                            }
+                            catch { }
+                        }
                     }
                     catch
                     {

@@ -18,6 +18,10 @@
     <Description>Pebble Index 01 webhook -&gt; Super Productivity task bridge</Description>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Index2SP.Tests" />
+  </ItemGroup>
+
   <!-- Single self-extracting exe for both variants when publishing with a RuntimeIdentifier
        (Avalonia/Skia ship native libs via NuGet, so they must be bundled even for the
        framework-dependent build). -->

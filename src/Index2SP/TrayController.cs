@@ -1007,6 +1007,9 @@ public sealed class TrayController : IDisposable
         else
         {
             m.Add(Action("Set server URL (http://host:port)…", () => _ = SetWhisperAsrEndpointAsync()));
+            m.Add(Action("Set model name…", () => _ = SetWhisperAsrCustomModelAsync()));
+            m.Add(Action("Set API key (optional)…", () => _ = SetWhisperAsrApiKeyAsync()));
+            m.Add(new NativeMenuItem("Protocol") { Menu = BuildWhisperAsrProtocolSubmenu() });
         }
 
         m.Add(new NativeMenuItem("Language") { Menu = BuildWhisperAsrLanguageSubmenu() });
@@ -1020,8 +1023,10 @@ public sealed class TrayController : IDisposable
         }
         else
         {
-            m.Add(Disabled("Engine: Remote webservice"));
+            var isParakeet = (cfg.Model ?? "").Contains("parakeet", StringComparison.OrdinalIgnoreCase);
+            m.Add(Disabled(isParakeet ? "Engine: Remote Parakeet ASR" : "Engine: Remote ASR"));
             m.Add(Disabled($"Server: {cfg.BaseUrl}"));
+            m.Add(Disabled($"Protocol: {cfg.Format} (model: {cfg.Model})"));
         }
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.Language) ? "Language: auto-detect" : $"Language: {cfg.Language}"));
         m.Add(Disabled("Only used for voice notes Pebble did not transcribe on-device"));
@@ -2426,6 +2431,59 @@ public sealed class TrayController : IDisposable
         if (value is null) return;
 
         SetWhisperAsrLanguage(value.Trim());
+    }
+
+    private NativeMenu BuildWhisperAsrProtocolSubmenu()
+    {
+        var m = new NativeMenu();
+        var current = (_config.WhisperAsr.Format ?? "auto").ToLowerInvariant();
+
+        var autoItem = new NativeMenuItem("Auto-detect (recommended)")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = current == "auto",
+        };
+        autoItem.Click += (_, _) => SetWhisperAsrFormat("auto");
+        m.Add(autoItem);
+
+        var openaiItem = new NativeMenuItem("OpenAI / Parakeet (/v1/audio/transcriptions)")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = current == "openai",
+        };
+        openaiItem.Click += (_, _) => SetWhisperAsrFormat("openai");
+        m.Add(openaiItem);
+
+        var asrItem = new NativeMenuItem("Whisper ASR webservice (/asr)")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = current == "asr",
+        };
+        asrItem.Click += (_, _) => SetWhisperAsrFormat("asr");
+        m.Add(asrItem);
+
+        return m;
+    }
+
+    private void SetWhisperAsrFormat(string format)
+    {
+        _config.WhisperAsr.Format = format;
+        SaveConfig($"STT protocol set to {format}");
+        if (_config.WhisperAsr.Enabled)
+            _ = RunWhisperAsrHealthCheckAsync(manual: false);
+    }
+
+    private async Task SetWhisperAsrApiKeyAsync()
+    {
+        var value = await InputDialog.ShowAsync("STT service API key / Bearer token",
+            "Optional: enter an API key or token if your STT endpoint requires authentication.\n" +
+            "Leave blank to disable authentication.", masked: true);
+        if (value is null) return;
+
+        _config.WhisperAsr.ApiKey = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        SaveConfig("STT API key updated");
+        if (_config.WhisperAsr.Enabled)
+            _ = RunWhisperAsrHealthCheckAsync(manual: false);
     }
 
     // ---- Web search -----------------------------------------------------

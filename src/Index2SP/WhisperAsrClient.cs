@@ -42,7 +42,8 @@ public class WhisperAsrClient : IDisposable
     }
 
     /// <summary>
-    /// Transcribes audio bytes by POSTing to the external /asr endpoint of onerahmet/openai-whisper-asr-webservice.
+    /// Transcribes audio bytes by POSTing to the external ASR webservice (supporting Parakeet,
+    /// OpenAI-compatible /v1/audio/transcriptions, and /asr).
     /// </summary>
     public async Task<string?> TranscribeRemoteAsync(
         ReadOnlyMemory<byte> audioBytes,
@@ -52,29 +53,100 @@ public class WhisperAsrClient : IDisposable
         if (audioBytes.IsEmpty) return null;
 
         var baseUrl = _config.BaseUrl.TrimEnd('/');
-        var query = new List<string> { "task=transcribe", "output=json" };
-        if (!string.IsNullOrWhiteSpace(_config.Language))
+        var (actualFileName, mediaType) = DetectAudioMetadata(audioBytes.Span, fileName);
+
+        var format = (_config.Format ?? "auto").Trim().ToLowerInvariant();
+        if (format == "auto")
         {
-            query.Add($"language={Uri.EscapeDataString(_config.Language.Trim())}");
+            if (baseUrl.EndsWith("/v1/audio/transcriptions", StringComparison.OrdinalIgnoreCase) ||
+                baseUrl.EndsWith("/transcriptions", StringComparison.OrdinalIgnoreCase))
+            {
+                format = "openai";
+            }
+            else if (baseUrl.EndsWith("/asr", StringComparison.OrdinalIgnoreCase))
+            {
+                format = "asr";
+            }
+            else if ((_config.Model ?? "").Contains("parakeet", StringComparison.OrdinalIgnoreCase))
+            {
+                format = "openai";
+            }
+            else if ((_config.Model ?? "").StartsWith("base", StringComparison.OrdinalIgnoreCase) ||
+                     (_config.Model ?? "").StartsWith("tiny", StringComparison.OrdinalIgnoreCase) ||
+                     (_config.Model ?? "").StartsWith("small", StringComparison.OrdinalIgnoreCase) ||
+                     (_config.Model ?? "").StartsWith("medium", StringComparison.OrdinalIgnoreCase) ||
+                     (_config.Model ?? "").StartsWith("large", StringComparison.OrdinalIgnoreCase))
+            {
+                format = "asr";
+            }
         }
 
-        var uri = new Uri($"{baseUrl}/asr?{string.Join("&", query)}");
+        if (format == "openai")
+        {
+            return await TranscribeOpenAiFormatAsync(baseUrl, audioBytes, actualFileName, mediaType, ct);
+        }
+
+        if (format == "asr")
+        {
+            return await TranscribeAsrFormatAsync(baseUrl, audioBytes, actualFileName, mediaType, ct);
+        }
+
+        // Auto mode with generic host:port URL:
+        // Try OpenAI format first (standard for Parakeet / Speaches / vLLM).
+        // If 404 (endpoint not found), automatically fall back to /asr format.
+        try
+        {
+            return await TranscribeOpenAiFormatAsync(baseUrl, audioBytes, actualFileName, mediaType, ct);
+        }
+        catch (WhisperAsrApiException ex) when (ex.Message.Contains("HTTP 404"))
+        {
+            _log?.Info($"Endpoint /v1/audio/transcriptions returned 404 at {baseUrl}, falling back to /asr endpoint...");
+            return await TranscribeAsrFormatAsync(baseUrl, audioBytes, actualFileName, mediaType, ct);
+        }
+    }
+
+    private async Task<string?> TranscribeOpenAiFormatAsync(
+        string baseUrl,
+        ReadOnlyMemory<byte> audioBytes,
+        string actualFileName,
+        string mediaType,
+        CancellationToken ct)
+    {
+        var targetUri = baseUrl.EndsWith("/v1/audio/transcriptions", StringComparison.OrdinalIgnoreCase)
+            ? new Uri(baseUrl)
+            : new Uri($"{baseUrl}/v1/audio/transcriptions");
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(TimeSpan.FromSeconds(_config.TimeoutSeconds));
         var token = cts.Token;
 
-        var (actualFileName, mediaType) = DetectAudioMetadata(audioBytes.Span, fileName);
+        using var request = new HttpRequestMessage(HttpMethod.Post, targetUri);
+        if (!string.IsNullOrWhiteSpace(_config.ApiKey))
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _config.ApiKey.Trim());
+        }
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, uri);
         using var formData = new MultipartFormDataContent();
-
         var fileContent = new ByteArrayContent(audioBytes.ToArray());
         fileContent.Headers.ContentType = new MediaTypeHeaderValue(mediaType);
-        formData.Add(fileContent, "audio_file", actualFileName);
-        request.Content = formData;
+        formData.Add(fileContent, "file", actualFileName);
 
-        _log?.Info($"Whisper ASR: POST {uri} ({audioBytes.Length} bytes, filename='{actualFileName}', mime='{mediaType}')");
+        var modelName = !string.IsNullOrWhiteSpace(_config.Model) &&
+                        !_config.Model.StartsWith("base", StringComparison.OrdinalIgnoreCase) &&
+                        !_config.Model.StartsWith("tiny", StringComparison.OrdinalIgnoreCase) &&
+                        !_config.Model.StartsWith("small", StringComparison.OrdinalIgnoreCase)
+            ? _config.Model
+            : "parakeet-tdt-0.6b";
+        formData.Add(new StringContent(modelName), "model");
+        formData.Add(new StringContent("json"), "response_format");
+
+        if (!string.IsNullOrWhiteSpace(_config.Language))
+        {
+            formData.Add(new StringContent(_config.Language.Trim()), "language");
+        }
+
+        request.Content = formData;
+        _log?.Info($"STT: POST {targetUri} [OpenAI/Parakeet format] ({audioBytes.Length} bytes, model='{modelName}', filename='{actualFileName}')");
 
         HttpResponseMessage response;
         try
@@ -83,14 +155,14 @@ public class WhisperAsrClient : IDisposable
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            _log?.Warn($"Whisper ASR: request timed out after {_config.TimeoutSeconds}s");
-            throw new WhisperAsrApiException($"Whisper ASR webservice request timed out after {_config.TimeoutSeconds}s. If your server is running on CPU, consider increasing whisperAsr.timeoutSeconds.");
+            _log?.Warn($"STT: request timed out after {_config.TimeoutSeconds}s");
+            throw new WhisperAsrApiException($"STT webservice request timed out after {_config.TimeoutSeconds}s at {targetUri}");
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException or TaskCanceledException)
         {
             if (ct.IsCancellationRequested) throw;
-            _log?.Warn($"Whisper ASR: connection error: {ex.Message}");
-            throw new WhisperAsrApiException($"Failed to reach Whisper ASR webservice at {baseUrl}: {ex.Message}", ex);
+            _log?.Warn($"STT: connection error: {ex.Message}");
+            throw new WhisperAsrApiException($"Failed to reach STT webservice at {targetUri}: {ex.Message}", ex);
         }
 
         using (response)
@@ -98,16 +170,91 @@ public class WhisperAsrClient : IDisposable
             var body = await response.Content.ReadAsStringAsync(token);
             if (!response.IsSuccessStatusCode)
             {
-                _log?.Warn($"Whisper ASR returned HTTP {(int)response.StatusCode}: {Truncate(body, 300)}");
-                throw new WhisperAsrApiException($"Whisper ASR webservice at {baseUrl} returned HTTP {(int)response.StatusCode}: {body}");
+                _log?.Warn($"STT returned HTTP {(int)response.StatusCode}: {Truncate(body, 300)}");
+                throw new WhisperAsrApiException($"STT webservice at {targetUri} returned HTTP {(int)response.StatusCode}: {body}");
             }
 
-            _log?.Info($"Whisper ASR returned HTTP 200 ({body.Length} chars): {Truncate(body, 200)}");
-
+            _log?.Info($"STT returned HTTP 200 ({body.Length} chars): {Truncate(body, 200)}");
             var text = ExtractTranscriptionText(body);
             if (string.IsNullOrWhiteSpace(text))
             {
-                _log?.Warn($"Whisper ASR returned HTTP 200 but no transcription text could be extracted. Full body ({body.Length} chars): {Truncate(body, 500)}");
+                _log?.Warn($"STT returned HTTP 200 but no transcription text could be extracted. Full body ({body.Length} chars): {Truncate(body, 500)}");
+                return null;
+            }
+
+            return text;
+        }
+    }
+
+    private async Task<string?> TranscribeAsrFormatAsync(
+        string baseUrl,
+        ReadOnlyMemory<byte> audioBytes,
+        string actualFileName,
+        string mediaType,
+        CancellationToken ct)
+    {
+        var targetUrl = baseUrl.EndsWith("/asr", StringComparison.OrdinalIgnoreCase)
+            ? baseUrl
+            : $"{baseUrl}/asr";
+
+        var query = new List<string> { "task=transcribe", "output=json" };
+        if (!string.IsNullOrWhiteSpace(_config.Language))
+        {
+            query.Add($"language={Uri.EscapeDataString(_config.Language.Trim())}");
+        }
+
+        var delimiter = targetUrl.Contains('?') ? "&" : "?";
+        var uri = new Uri($"{targetUrl}{delimiter}{string.Join("&", query)}");
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(_config.TimeoutSeconds));
+        var token = cts.Token;
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, uri);
+        if (!string.IsNullOrWhiteSpace(_config.ApiKey))
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _config.ApiKey.Trim());
+        }
+
+        using var formData = new MultipartFormDataContent();
+        var fileContent = new ByteArrayContent(audioBytes.ToArray());
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue(mediaType);
+        formData.Add(fileContent, "audio_file", actualFileName);
+
+        request.Content = formData;
+        _log?.Info($"STT: POST {uri} [/asr format] ({audioBytes.Length} bytes, filename='{actualFileName}')");
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await SharedHttpClient.SendAsync(request, token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _log?.Warn($"STT: request timed out after {_config.TimeoutSeconds}s");
+            throw new WhisperAsrApiException($"STT webservice request timed out after {_config.TimeoutSeconds}s at {uri}");
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException or TaskCanceledException)
+        {
+            if (ct.IsCancellationRequested) throw;
+            _log?.Warn($"STT: connection error: {ex.Message}");
+            throw new WhisperAsrApiException($"Failed to reach STT webservice at {uri}: {ex.Message}", ex);
+        }
+
+        using (response)
+        {
+            var body = await response.Content.ReadAsStringAsync(token);
+            if (!response.IsSuccessStatusCode)
+            {
+                _log?.Warn($"STT returned HTTP {(int)response.StatusCode}: {Truncate(body, 300)}");
+                throw new WhisperAsrApiException($"STT webservice at {uri} returned HTTP {(int)response.StatusCode}: {body}");
+            }
+
+            _log?.Info($"STT returned HTTP 200 ({body.Length} chars): {Truncate(body, 200)}");
+            var text = ExtractTranscriptionText(body);
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                _log?.Warn($"STT returned HTTP 200 but no transcription text could be extracted. Full body ({body.Length} chars): {Truncate(body, 500)}");
                 return null;
             }
 
@@ -267,7 +414,7 @@ public class WhisperAsrClient : IDisposable
     }
 
     /// <summary>
-    /// Remote reachability probe. Pings GET /health (falling back to GET /docs) and measures round-trip latency.
+    /// Remote reachability probe. Pings GET /health (falling back to GET /v1/models, GET /docs, GET /) and measures round-trip latency.
     /// </summary>
     public async Task<string> TestRemoteAsync(CancellationToken ct = default)
     {
@@ -278,39 +425,45 @@ public class WhisperAsrClient : IDisposable
         cts.CancelAfter(TimeSpan.FromSeconds(Math.Min(_config.TimeoutSeconds, 10)));
         var token = cts.Token;
 
-        var healthUri = new Uri($"{baseUrl}/health");
-        try
+        var candidatePaths = new[] { "/health", "/v1/models", "/docs", "/" };
+        Exception? lastEx = null;
+
+        foreach (var path in candidatePaths)
         {
-            using var req = new HttpRequestMessage(HttpMethod.Get, healthUri);
-            using var resp = await SharedHttpClient.SendAsync(req, token);
-            sw.Stop();
-
-            if (resp.IsSuccessStatusCode)
-            {
-                return $"OK — Whisper ASR webservice reachable in {sw.ElapsedMilliseconds}ms at {baseUrl}";
-            }
-
-            // If /health was not found (404), try /docs as fallback
-            if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+            try
             {
                 sw.Restart();
-                using var docsReq = new HttpRequestMessage(HttpMethod.Get, new Uri($"{baseUrl}/docs"));
-                using var docsResp = await SharedHttpClient.SendAsync(docsReq, token);
+                using var req = new HttpRequestMessage(HttpMethod.Get, new Uri($"{baseUrl}{path}"));
+                if (!string.IsNullOrWhiteSpace(_config.ApiKey))
+                {
+                    req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _config.ApiKey.Trim());
+                }
+
+                using var resp = await SharedHttpClient.SendAsync(req, token);
                 sw.Stop();
 
-                if (docsResp.IsSuccessStatusCode)
+                if (resp.IsSuccessStatusCode)
                 {
-                    return $"OK — Whisper ASR webservice reachable in {sw.ElapsedMilliseconds}ms at {baseUrl}";
+                    return $"OK — STT webservice reachable in {sw.ElapsedMilliseconds}ms at {baseUrl} ({path})";
                 }
             }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                lastEx = ex;
+            }
+        }
 
-            throw new WhisperAsrApiException($"Whisper ASR webservice returned HTTP {(int)resp.StatusCode} for {healthUri}");
-        }
-        catch (Exception ex) when (ex is not WhisperAsrApiException)
+        if (token.IsCancellationRequested && !ct.IsCancellationRequested)
         {
-            if (ct.IsCancellationRequested) throw;
-            throw new WhisperAsrApiException($"Cannot reach Whisper ASR webservice at {baseUrl}. Is the Docker container running? ({ex.Message})", ex);
+            throw new WhisperAsrApiException($"STT webservice at {baseUrl} timed out during reachability test.");
         }
+
+        if (lastEx != null)
+        {
+            throw new WhisperAsrApiException($"Cannot reach Whisper ASR webservice at {baseUrl}: {lastEx.Message}", lastEx);
+        }
+
+        throw new WhisperAsrApiException($"Cannot reach Whisper ASR webservice at {baseUrl}: no candidate endpoints responded with HTTP 200.");
     }
 
     public void Dispose()
