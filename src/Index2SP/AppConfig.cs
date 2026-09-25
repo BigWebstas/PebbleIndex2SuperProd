@@ -26,6 +26,13 @@ public sealed class AppConfig
     /// </summary>
     public string InboundAuthToken { get; set; } = "";
 
+    /// <summary>
+    /// Optional HMAC-SHA256 shared secret. When set, inbound requests must carry a valid HMAC-SHA256
+    /// signature matching the request body in X-Signature-SHA256, X-Hub-Signature-256, or X-Signature header.
+    /// If blank, HMAC signature checking is disabled.
+    /// </summary>
+    public string HmacSecret { get; set; } = "";
+
     /// <summary>Super Productivity title cap (the API rejects titles &gt; 300 chars after trim).</summary>
     public int TitleMaxLength { get; set; } = 300;
 
@@ -710,6 +717,8 @@ public sealed class AppConfig
 
     private void Normalize()
     {
+        InboundAuthToken = InboundAuthToken?.Trim() ?? "";
+        HmacSecret = HmacSecret?.Trim() ?? "";
         if (string.IsNullOrWhiteSpace(ListenAddress)) ListenAddress = "127.0.0.1";
         if (Port is <= 0 or > 65535) Port = 8787;
         if (string.IsNullOrWhiteSpace(WebhookPath)) WebhookPath = "/pebble";

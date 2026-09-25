@@ -92,8 +92,15 @@ public sealed class WebhookServer : IAsyncDisposable
         _app = app;
 
         _log.Info($"Webhook listener started on http://{_config.ListenAddress}:{_config.Port}{_config.WebhookPath}");
-        if (string.IsNullOrEmpty(_config.InboundAuthToken))
-            _log.Warn("No inboundAuthToken set — anyone who can reach the listener can create tasks.");
+        if (string.IsNullOrEmpty(_config.InboundAuthToken) && string.IsNullOrEmpty(_config.HmacSecret))
+            _log.Warn("No inboundAuthToken or hmacSecret set — anyone who can reach the listener can create tasks.");
+        else
+        {
+            if (!string.IsNullOrEmpty(_config.HmacSecret))
+                _log.Info("HMAC-SHA256 signature verification enabled for inbound webhooks.");
+            if (!string.IsNullOrEmpty(_config.InboundAuthToken))
+                _log.Info("Inbound bearer token authorization enabled for inbound webhooks.");
+        }
     }
 
     public async Task StopAsync()
@@ -118,9 +125,20 @@ public sealed class WebhookServer : IAsyncDisposable
     {
         var remote = ctx.Connection.RemoteIpAddress?.ToString() ?? "?";
 
-        if (!IsAuthorized(ctx.Request))
+        // Enable buffering so the request body stream can be read for HMAC verification
+        // and rewound for ReadFormAsync multipart form parsing.
+        ctx.Request.EnableBuffering();
+        byte[] bodyBytes;
+        using (var ms = new MemoryStream())
         {
-            _log.Warn($"Rejected webhook from {remote}: bad/missing Authorization");
+            await ctx.Request.Body.CopyToAsync(ms, ctx.RequestAborted);
+            bodyBytes = ms.ToArray();
+        }
+        ctx.Request.Body.Position = 0;
+
+        if (!IsAuthorized(ctx.Request, bodyBytes))
+        {
+            _log.Warn($"Rejected webhook from {remote}: bad/missing Authorization or HMAC signature");
             return Results.Json(new { ok = false, error = new { message = "unauthorized" } },
                 statusCode: StatusCodes.Status401Unauthorized);
         }
@@ -650,16 +668,100 @@ public sealed class WebhookServer : IAsyncDisposable
         }
     }
 
-    private bool IsAuthorized(HttpRequest request)
+    internal static readonly string[] HmacHeaderNames = new[]
     {
-        var expected = _config.InboundAuthToken;
-        if (string.IsNullOrEmpty(expected)) return true; // auth disabled
+        "X-Signature-SHA256",
+        "X-Hub-Signature-256",
+        "X-Signature",
+        "X-Index-Signature"
+    };
 
-        var header = request.Headers.Authorization.ToString().Trim();
-        if (header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
-            header = header["Bearer ".Length..].Trim();
+    internal bool IsAuthorized(HttpRequest request, byte[] bodyBytes)
+    {
+        var expectedBearer = _config.InboundAuthToken?.Trim() ?? "";
+        var expectedHmac = _config.HmacSecret?.Trim() ?? "";
 
-        return FixedTimeEquals(header, expected);
+        // If neither is configured, auth is disabled
+        if (string.IsNullOrEmpty(expectedBearer) && string.IsNullOrEmpty(expectedHmac))
+            return true;
+
+        // If HMAC secret is configured, require a valid HMAC-SHA256 signature
+        if (!string.IsNullOrEmpty(expectedHmac))
+        {
+            if (!VerifyHmacSignature(request.Headers, bodyBytes, expectedHmac))
+            {
+                _log.Warn("Inbound webhook HMAC-SHA256 signature verification failed");
+                return false;
+            }
+        }
+
+        // If InboundAuthToken is configured:
+        if (!string.IsNullOrEmpty(expectedBearer))
+        {
+            var header = request.Headers.Authorization.ToString().Trim();
+            if (header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+                header = header["Bearer ".Length..].Trim();
+
+            if (string.IsNullOrEmpty(header))
+                header = request.Headers["X-Widget-Token"].ToString().Trim();
+            if (string.IsNullOrEmpty(header))
+                header = request.Headers["X-Pebble-Token"].ToString().Trim();
+
+            if (!FixedTimeEquals(header, expectedBearer))
+            {
+                // If Bearer token didn't match and HmacSecret was not explicitly set,
+                // allow InboundAuthToken to serve as the HMAC secret
+                if (string.IsNullOrEmpty(expectedHmac) && VerifyHmacSignature(request.Headers, bodyBytes, expectedBearer))
+                {
+                    return true;
+                }
+                _log.Warn("Inbound webhook Bearer token verification failed");
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    internal static bool VerifyHmacSignature(IHeaderDictionary headers, byte[] bodyBytes, string secret)
+    {
+        if (string.IsNullOrWhiteSpace(secret)) return false;
+
+        string? signatureHeader = null;
+        foreach (var headerName in HmacHeaderNames)
+        {
+            var val = headers[headerName].ToString().Trim();
+            if (!string.IsNullOrEmpty(val))
+            {
+                signatureHeader = val;
+                break;
+            }
+        }
+
+        if (string.IsNullOrEmpty(signatureHeader))
+            return false;
+
+        var sigHex = signatureHeader;
+        if (sigHex.StartsWith("sha256=", StringComparison.OrdinalIgnoreCase))
+            sigHex = sigHex["sha256=".Length..].Trim();
+
+        byte[] receivedSig;
+        try
+        {
+            receivedSig = Convert.FromHexString(sigHex);
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+
+        var keyBytes = Encoding.UTF8.GetBytes(secret.Trim());
+        var expectedHash = HMACSHA256.HashData(keyBytes, bodyBytes);
+
+        if (receivedSig.Length != expectedHash.Length)
+            return false;
+
+        return CryptographicOperations.FixedTimeEquals(receivedSig, expectedHash);
     }
 
     private static bool FixedTimeEquals(string a, string b)
