@@ -34,6 +34,7 @@
     "ollamaModel": "",
     "timeoutSeconds": 8,
     "requireTags": false,
+    "alwaysAddDefaultTag": false,
     "exclusiveRouting": false
   },
   "joplin": {

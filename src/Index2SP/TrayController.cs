@@ -2480,7 +2480,7 @@ public sealed class TrayController : IDisposable
             "Leave blank to disable authentication.", masked: true);
         if (value is null) return;
 
-        _config.WhisperAsr.ApiKey = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        _config.WhisperAsr.ApiKey = value.Trim();
         SaveConfig("STT API key updated");
         if (_config.WhisperAsr.Enabled)
             _ = RunWhisperAsrHealthCheckAsync(manual: false);

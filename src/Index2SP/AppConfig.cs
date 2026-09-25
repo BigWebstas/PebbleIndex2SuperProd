@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace Index2SP;
@@ -227,7 +228,7 @@ public sealed class AppConfig
         /// <summary>
         /// Optional API key or bearer token if the remote ASR service requires authentication.
         /// </summary>
-        public string? ApiKey { get; set; }
+        public string ApiKey { get; set; } = "";
 
         /// <summary>Spoken language code (e.g. "en", "es", "de") to request. Blank uses auto-detection.</summary>
         public string Language { get; set; } = "";
@@ -498,7 +499,205 @@ public sealed class AppConfig
         var cfg = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions)
                   ?? throw new InvalidDataException("config.json deserialized to null");
         cfg.Normalize();
+        PopulateMissingDefaults(path, cfg);
         return cfg;
+    }
+
+    /// <summary>
+    /// Inspects the configuration file on disk, merges any schema defaults that are not already
+    /// populated, prunes obsolete legacy aliases that were migrated, and saves the updated
+    /// configuration file if modified.
+    /// Returns true if the file was modified and updated on disk, false otherwise.
+    /// </summary>
+    public static bool PopulateMissingDefaults(string path, AppConfig? loadedConfig = null)
+    {
+        if (!File.Exists(path)) return false;
+
+        string originalJson;
+        try
+        {
+            originalJson = File.ReadAllText(path);
+        }
+        catch
+        {
+            return false;
+        }
+
+        JsonObject? targetObj;
+        try
+        {
+            var docOptions = new JsonDocumentOptions
+            {
+                CommentHandling = JsonCommentHandling.Skip,
+                AllowTrailingCommas = true,
+            };
+            var node = JsonNode.Parse(originalJson, documentOptions: docOptions);
+            targetObj = node as JsonObject;
+        }
+        catch
+        {
+            return false;
+        }
+
+        if (targetObj is null) return false;
+
+        AppConfig sourceConfig;
+        if (loadedConfig is not null)
+        {
+            sourceConfig = loadedConfig;
+        }
+        else
+        {
+            try
+            {
+                var parsed = JsonSerializer.Deserialize<AppConfig>(originalJson, JsonOptions) ?? new AppConfig();
+                parsed.Normalize();
+                sourceConfig = parsed;
+            }
+            catch
+            {
+                sourceConfig = new AppConfig();
+                sourceConfig.Normalize();
+            }
+        }
+
+        var schemaNode = JsonSerializer.SerializeToNode(sourceConfig, JsonOptions) as JsonObject;
+        if (schemaNode is null) return false;
+
+        bool modified = false;
+        var mergedObj = MergeObjects(targetObj, schemaNode, parentKey: null, ref modified);
+
+        if (modified)
+        {
+            try
+            {
+                var tmp = path + ".tmp";
+                var formatted = JsonSerializer.Serialize(mergedObj, JsonOptions);
+                File.WriteAllText(tmp, formatted);
+                File.Move(tmp, path, overwrite: true);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    private static JsonObject MergeObjects(JsonObject target, JsonObject schema, string? parentKey, ref bool modified)
+    {
+        var result = new JsonObject();
+
+        // 1. Iterate through schema properties in canonical declaration order
+        foreach (var (schemaKey, schemaVal) in schema)
+        {
+            // Find case-insensitive match in target
+            string? targetKey = null;
+            JsonNode? targetVal = null;
+            foreach (var (k, v) in target)
+            {
+                if (string.Equals(k, schemaKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    targetKey = k;
+                    targetVal = v;
+                    break;
+                }
+            }
+
+            if (targetKey is null)
+            {
+                // Property missing in target -> populate from schema
+                result[schemaKey] = schemaVal?.DeepClone();
+                modified = true;
+            }
+            else
+            {
+                // Check if key casing differed from canonical camelCase
+                if (!string.Equals(targetKey, schemaKey, StringComparison.Ordinal))
+                {
+                    modified = true;
+                }
+
+                if (schemaVal is JsonObject schemaChild)
+                {
+                    if (targetVal is JsonObject targetChild)
+                    {
+                        result[schemaKey] = MergeObjects(targetChild, schemaChild, parentKey: schemaKey, ref modified);
+                    }
+                    else
+                    {
+                        // Target has null or non-object where object was expected
+                        result[schemaKey] = schemaChild.DeepClone();
+                        modified = true;
+                    }
+                }
+                else
+                {
+                    // Primitive or array property
+                    if (targetVal is null && schemaVal is not null)
+                    {
+                        result[schemaKey] = schemaVal.DeepClone();
+                        modified = true;
+                    }
+                    else
+                    {
+                        result[schemaKey] = targetVal?.DeepClone();
+                    }
+                }
+            }
+        }
+
+        // 2. Preserve any extra properties from target that are not in schema,
+        // unless they are obsolete legacy aliases that were already migrated.
+        foreach (var (targetKey, targetVal) in target)
+        {
+            bool inSchema = false;
+            foreach (var (sk, _) in schema)
+            {
+                if (string.Equals(sk, targetKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    inSchema = true;
+                    break;
+                }
+            }
+
+            if (!inSchema)
+            {
+                if (IsObsoleteAlias(targetKey, parentKey))
+                {
+                    // Obsolete alias was already migrated and is now pruned from disk
+                    modified = true;
+                }
+                else
+                {
+                    result[targetKey] = targetVal?.DeepClone();
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private static bool IsObsoleteAlias(string key, string? parentKey)
+    {
+        if (parentKey is null)
+        {
+            return key.Equals("whisperLive", StringComparison.OrdinalIgnoreCase)
+                || key.Equals("wyoming", StringComparison.OrdinalIgnoreCase)
+                || key.Equals("whisper", StringComparison.OrdinalIgnoreCase)
+                || key.Equals("stt", StringComparison.OrdinalIgnoreCase)
+                || key.Equals("audioOnlyFallback", StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (string.Equals(parentKey, "whisperAsr", StringComparison.OrdinalIgnoreCase))
+        {
+            return key.Equals("host", StringComparison.OrdinalIgnoreCase)
+                || key.Equals("port", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return false;
     }
 
     public void Save(string path)
@@ -642,8 +841,7 @@ public sealed class AppConfig
             "asr" or "webservice" => "asr",
             _ => "auto"
         };
-        if (string.IsNullOrWhiteSpace(WhisperAsr.ApiKey)) WhisperAsr.ApiKey = null;
-        else WhisperAsr.ApiKey = WhisperAsr.ApiKey.Trim();
+        WhisperAsr.ApiKey = WhisperAsr.ApiKey?.Trim() ?? "";
         WebSearch ??= new WebSearchConfig();
         WebSearch.MaxUses = Math.Clamp(WebSearch.MaxUses, 1, 10);
         WebSearch.SendDelaySeconds = Math.Clamp(WebSearch.SendDelaySeconds, 0, 60);

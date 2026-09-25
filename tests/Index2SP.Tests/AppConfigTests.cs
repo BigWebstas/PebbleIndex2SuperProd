@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Xunit;
 
 namespace Index2SP.Tests;
@@ -283,5 +285,141 @@ public class AppConfigTests : IDisposable
         Assert.Equal("-1001", reloaded.WebSearch.ChatId);
         Assert.Equal("-1002", reloaded.WebhookReceipt.ChatId);
         Assert.NotEqual(reloaded.WebSearch.ChatId, reloaded.WebhookReceipt.ChatId);
+    }
+
+    [Fact]
+    public void LoadOrCreate_PopulatesMissingDefaultsOnDisk_PreservesExistingValues()
+    {
+        // Existing user config with only a few custom settings
+        File.WriteAllText(ConfigPath, """
+        {
+          "listenAddress": "0.0.0.0",
+          "port": 9000,
+          "superProductivity": {
+            "baseUrl": "http://192.168.1.50:3876",
+            "tagIds": ["tagA", "tagB"]
+          }
+        }
+        """);
+
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        // In-memory properties
+        Assert.Equal("0.0.0.0", config.ListenAddress);
+        Assert.Equal(9000, config.Port);
+        Assert.Equal("http://192.168.1.50:3876", config.SuperProductivity.BaseUrl);
+        Assert.Equal(new[] { "tagA", "tagB" }, config.SuperProductivity.TagIds);
+        Assert.Equal("", config.SuperProductivity.ShoppingProjectId);
+
+        // Verify the file ON DISK was backfilled with missing properties
+        var rawJson = File.ReadAllText(ConfigPath);
+        var diskNode = JsonNode.Parse(rawJson) as JsonObject;
+        Assert.NotNull(diskNode);
+
+        // Preserved user settings
+        Assert.Equal("0.0.0.0", diskNode["listenAddress"]?.GetValue<string>());
+        Assert.Equal(9000, diskNode["port"]?.GetValue<int>());
+        Assert.Equal("http://192.168.1.50:3876", diskNode["superProductivity"]?["baseUrl"]?.GetValue<string>());
+        var tags = diskNode["superProductivity"]?["tagIds"]?.AsArray();
+        Assert.NotNull(tags);
+        Assert.Equal(2, tags.Count);
+        Assert.Equal("tagA", tags[0]?.GetValue<string>());
+
+        // Missing sub-property populated
+        Assert.Equal("", diskNode["superProductivity"]?["shoppingProjectId"]?.GetValue<string>());
+
+        // Missing top-level sections populated
+        Assert.NotNull(diskNode["whisperAsr"]);
+        Assert.False(diskNode["whisperAsr"]?["enabled"]?.GetValue<bool>());
+        Assert.Equal("auto", diskNode["whisperAsr"]?["format"]?.GetValue<string>());
+        Assert.NotNull(diskNode["aiClassifier"]);
+        Assert.NotNull(diskNode["joplin"]);
+        Assert.NotNull(diskNode["googleCalendar"]);
+        Assert.NotNull(diskNode["beeper"]);
+        Assert.NotNull(diskNode["webSearch"]);
+        Assert.NotNull(diskNode["telegram"]);
+    }
+
+    [Fact]
+    public void LoadOrCreate_PopulatesMissingNestedOptionsInExistingWhisperAsr()
+    {
+        File.WriteAllText(ConfigPath, """
+        {
+          "whisperAsr": {
+            "enabled": true,
+            "baseUrl": "http://192.168.1.140:5092",
+            "apiKey": "AIzaSyALBXU0p"
+          }
+        }
+        """);
+
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.True(config.WhisperAsr.Enabled);
+        Assert.Equal("http://192.168.1.140:5092", config.WhisperAsr.BaseUrl);
+        Assert.Equal("AIzaSyALBXU0p", config.WhisperAsr.ApiKey);
+
+        // Verify disk file
+        var rawJson = File.ReadAllText(ConfigPath);
+        var diskNode = JsonNode.Parse(rawJson) as JsonObject;
+        Assert.NotNull(diskNode);
+        var whisperObj = diskNode["whisperAsr"]?.AsObject();
+        Assert.NotNull(whisperObj);
+
+        Assert.True(whisperObj["enabled"]?.GetValue<bool>());
+        Assert.Equal("http://192.168.1.140:5092", whisperObj["baseUrl"]?.GetValue<string>());
+        Assert.Equal("AIzaSyALBXU0p", whisperObj["apiKey"]?.GetValue<string>());
+        Assert.Equal("remote", whisperObj["mode"]?.GetValue<string>());
+        Assert.Equal("auto", whisperObj["format"]?.GetValue<string>());
+        Assert.Equal("base.en", whisperObj["model"]?.GetValue<string>());
+        Assert.Equal(30, whisperObj["timeoutSeconds"]?.GetValue<int>());
+    }
+
+    [Fact]
+    public void LoadOrCreate_PrunesObsoleteAliasesFromDisk()
+    {
+        File.WriteAllText(ConfigPath, """
+        {
+          "whisperLive": {
+            "enabled": true,
+            "host": "192.168.1.70",
+            "port": 9090
+          },
+          "audioOnlyFallback": true
+        }
+        """);
+
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.True(config.WhisperAsr.Enabled);
+        Assert.Equal("http://192.168.1.70:9090", config.WhisperAsr.BaseUrl);
+
+        var rawJson = File.ReadAllText(ConfigPath);
+        var diskNode = JsonNode.Parse(rawJson) as JsonObject;
+        Assert.NotNull(diskNode);
+
+        // Obsolete aliases removed from disk
+        Assert.Null(diskNode["whisperLive"]);
+        Assert.Null(diskNode["audioOnlyFallback"]);
+
+        // Migrated whisperAsr present on disk
+        Assert.NotNull(diskNode["whisperAsr"]);
+        Assert.True(diskNode["whisperAsr"]?["enabled"]?.GetValue<bool>());
+        Assert.Equal("http://192.168.1.70:9090", diskNode["whisperAsr"]?["baseUrl"]?.GetValue<string>());
+        Assert.Null(diskNode["whisperAsr"]?["host"]);
+        Assert.Null(diskNode["whisperAsr"]?["port"]);
+    }
+
+    [Fact]
+    public void PopulateMissingDefaults_DoesNotRewriteFileWhenAlreadyUpToDate()
+    {
+        // First call writes full default config
+        AppConfig.LoadOrCreate(ConfigPath);
+        var writeTimeFirst = File.GetLastWriteTimeUtc(ConfigPath);
+
+        // Subsequent call with already-complete config should return false and leave file untouched
+        var modified = AppConfig.PopulateMissingDefaults(ConfigPath);
+        Assert.False(modified);
+        Assert.Equal(writeTimeFirst, File.GetLastWriteTimeUtc(ConfigPath));
     }
 }
