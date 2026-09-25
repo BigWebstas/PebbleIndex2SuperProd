@@ -73,6 +73,11 @@ public sealed class WebhookServer : IAsyncDisposable
         var app = builder.Build();
 
         app.MapGet("/health", () => Results.Json(new { ok = true, service = "index2sp", version = AppInfo.Version }));
+        app.MapGet(_config.WebhookPath, () => Results.Json(new { ok = true, service = "index2sp", version = AppInfo.Version }));
+        if (!string.Equals(_config.WebhookPath.TrimEnd('/'), "/health", StringComparison.OrdinalIgnoreCase))
+        {
+            app.MapGet(_config.WebhookPath.TrimEnd('/') + "/health", () => Results.Json(new { ok = true, service = "index2sp", version = AppInfo.Version }));
+        }
 
         // Cast to Delegate so the returned IResult is written to the response
         // (a bare method group binds as RequestDelegate and discards it).
