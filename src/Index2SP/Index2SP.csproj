@@ -13,7 +13,7 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
-    <Version>1.38.5</Version>
+    <Version>1.38.6</Version>
     <Product>Index2SP</Product>
     <Description>Pebble Index 01 webhook -&gt; Super Productivity task bridge</Description>
   </PropertyGroup>

@@ -22,6 +22,8 @@ public sealed class WebhookServer : IAsyncDisposable
     private readonly CaptureTagResolver _captureTag;
     private readonly Outbox _outbox;
     private readonly AiTaskClassifier _classifier;
+    private readonly string _webhookPath;
+    private readonly string _healthPath;
     private WebApplication? _app;
     private SuperProductivityClient? _spClient;
 
@@ -32,6 +34,10 @@ public sealed class WebhookServer : IAsyncDisposable
         _captureTag = captureTag;
         _outbox = outbox;
         _classifier = classifier;
+
+        _webhookPath = _config.WebhookPath.TrimEnd('/');
+        if (string.IsNullOrEmpty(_webhookPath)) _webhookPath = "/pebble";
+        _healthPath = _webhookPath + "/health";
     }
 
     public bool IsRunning => _app is not null;
@@ -73,25 +79,25 @@ public sealed class WebhookServer : IAsyncDisposable
         var app = builder.Build();
 
         app.MapGet("/health", () => Results.Json(new { ok = true, service = "index2sp", version = AppInfo.Version }));
-        app.MapGet(_config.WebhookPath, () => Results.Json(new { ok = true, service = "index2sp", version = AppInfo.Version }));
-        if (!string.Equals(_config.WebhookPath.TrimEnd('/'), "/health", StringComparison.OrdinalIgnoreCase))
+        app.MapGet(_webhookPath, () => Results.Json(new { ok = true, service = "index2sp", version = AppInfo.Version }));
+        if (!string.Equals(_webhookPath, "/health", StringComparison.OrdinalIgnoreCase))
         {
-            app.MapGet(_config.WebhookPath.TrimEnd('/') + "/health", () => Results.Json(new { ok = true, service = "index2sp", version = AppInfo.Version }));
+            app.MapGet(_healthPath, () => Results.Json(new { ok = true, service = "index2sp", version = AppInfo.Version }));
         }
 
         // Cast to Delegate so the returned IResult is written to the response
         // (a bare method group binds as RequestDelegate and discards it).
-        app.MapPost(_config.WebhookPath, (Delegate)HandleWebhookAsync);
+        app.MapPost(_webhookPath, (Delegate)HandleWebhookAsync);
 
         // Any other path -> 404 with a hint (helps while wiring up the tunnel).
         app.MapFallback(() => Results.Json(
-            new { ok = false, error = new { message = $"POST your Pebble webhook to {_config.WebhookPath}" } },
+            new { ok = false, error = new { message = $"POST your Pebble webhook to {_webhookPath}" } },
             statusCode: StatusCodes.Status404NotFound));
 
         await app.StartAsync();
         _app = app;
 
-        _log.Info($"Webhook listener started on http://{_config.ListenAddress}:{_config.Port}{_config.WebhookPath}");
+        _log.Info($"Webhook listener started on http://{_config.ListenAddress}:{_config.Port}{_webhookPath}");
         if (string.IsNullOrEmpty(_config.InboundAuthToken) && string.IsNullOrEmpty(_config.HmacSecret))
             _log.Warn("No inboundAuthToken or hmacSecret set — anyone who can reach the listener can create tasks.");
         else
@@ -125,16 +131,18 @@ public sealed class WebhookServer : IAsyncDisposable
     {
         var remote = ctx.Connection.RemoteIpAddress?.ToString() ?? "?";
 
-        // Enable buffering so the request body stream can be read for HMAC verification
-        // and rewound for ReadFormAsync multipart form parsing.
-        ctx.Request.EnableBuffering();
-        byte[] bodyBytes;
-        using (var ms = new MemoryStream())
+        // Lazy buffering: only buffer and copy request body into byte array if HMAC verification is actually needed.
+        // For unauthenticated or bearer-only requests, stream multipart form directly with zero extra body allocation.
+        bool needsHmac = !string.IsNullOrEmpty(_config.HmacSecret) || HasHmacSignatureHeader(ctx.Request.Headers);
+        byte[]? bodyBytes = null;
+        if (needsHmac)
         {
+            ctx.Request.EnableBuffering();
+            using var ms = new MemoryStream();
             await ctx.Request.Body.CopyToAsync(ms, ctx.RequestAborted);
             bodyBytes = ms.ToArray();
+            ctx.Request.Body.Position = 0;
         }
-        ctx.Request.Body.Position = 0;
 
         if (!IsAuthorized(ctx.Request, bodyBytes))
         {
@@ -676,7 +684,17 @@ public sealed class WebhookServer : IAsyncDisposable
         "X-Index-Signature"
     };
 
-    internal bool IsAuthorized(HttpRequest request, byte[] bodyBytes)
+    internal static bool HasHmacSignatureHeader(IHeaderDictionary headers)
+    {
+        foreach (var headerName in HmacHeaderNames)
+        {
+            if (!string.IsNullOrEmpty(headers[headerName].ToString()))
+                return true;
+        }
+        return false;
+    }
+
+    internal bool IsAuthorized(HttpRequest request, byte[]? bodyBytes)
     {
         var expectedBearer = _config.InboundAuthToken?.Trim() ?? "";
         var expectedHmac = _config.HmacSecret?.Trim() ?? "";
@@ -685,10 +703,12 @@ public sealed class WebhookServer : IAsyncDisposable
         if (string.IsNullOrEmpty(expectedBearer) && string.IsNullOrEmpty(expectedHmac))
             return true;
 
+        var bodySpan = (ReadOnlySpan<byte>)(bodyBytes ?? Array.Empty<byte>());
+
         // If HMAC secret is configured, require a valid HMAC-SHA256 signature
         if (!string.IsNullOrEmpty(expectedHmac))
         {
-            if (!VerifyHmacSignature(request.Headers, bodyBytes, expectedHmac))
+            if (!VerifyHmacSignature(request.Headers, bodySpan, expectedHmac))
             {
                 _log.Warn("Inbound webhook HMAC-SHA256 signature verification failed");
                 return false;
@@ -711,7 +731,7 @@ public sealed class WebhookServer : IAsyncDisposable
             {
                 // If Bearer token didn't match and HmacSecret was not explicitly set,
                 // allow InboundAuthToken to serve as the HMAC secret
-                if (string.IsNullOrEmpty(expectedHmac) && VerifyHmacSignature(request.Headers, bodyBytes, expectedBearer))
+                if (string.IsNullOrEmpty(expectedHmac) && VerifyHmacSignature(request.Headers, bodySpan, expectedBearer))
                 {
                     return true;
                 }
@@ -723,7 +743,10 @@ public sealed class WebhookServer : IAsyncDisposable
         return true;
     }
 
-    internal static bool VerifyHmacSignature(IHeaderDictionary headers, byte[] bodyBytes, string secret)
+    internal static bool VerifyHmacSignature(IHeaderDictionary headers, byte[] bodyBytes, string secret) =>
+        VerifyHmacSignature(headers, (ReadOnlySpan<byte>)(bodyBytes ?? Array.Empty<byte>()), secret);
+
+    internal static bool VerifyHmacSignature(IHeaderDictionary headers, ReadOnlySpan<byte> bodyBytes, string secret)
     {
         if (string.IsNullOrWhiteSpace(secret)) return false;
 
@@ -741,9 +764,12 @@ public sealed class WebhookServer : IAsyncDisposable
         if (string.IsNullOrEmpty(signatureHeader))
             return false;
 
-        var sigHex = signatureHeader;
+        var sigHex = signatureHeader.AsSpan();
         if (sigHex.StartsWith("sha256=", StringComparison.OrdinalIgnoreCase))
             sigHex = sigHex["sha256=".Length..].Trim();
+
+        if (sigHex.Length != 64)
+            return false;
 
         byte[] receivedSig;
         try
@@ -755,11 +781,16 @@ public sealed class WebhookServer : IAsyncDisposable
             return false;
         }
 
-        var keyBytes = Encoding.UTF8.GetBytes(secret.Trim());
-        var expectedHash = HMACSHA256.HashData(keyBytes, bodyBytes);
-
-        if (receivedSig.Length != expectedHash.Length)
+        if (receivedSig.Length != 32)
             return false;
+
+        Span<byte> expectedHash = stackalloc byte[32];
+        var trimmedSecret = secret.Trim();
+        int keyByteCount = Encoding.UTF8.GetByteCount(trimmedSecret);
+        Span<byte> keyBytes = keyByteCount <= 256 ? stackalloc byte[keyByteCount] : new byte[keyByteCount];
+        Encoding.UTF8.GetBytes(trimmedSecret, keyBytes);
+
+        HMACSHA256.HashData(keyBytes, bodyBytes, expectedHash);
 
         return CryptographicOperations.FixedTimeEquals(receivedSig, expectedHash);
     }
