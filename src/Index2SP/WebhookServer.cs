@@ -128,6 +128,7 @@ public sealed class WebhookServer : IAsyncDisposable
         }
 
         PebblePayload payload;
+        IFormFile? audioFile = null;
         try
         {
             var form = await ctx.Request.ReadFormAsync();
@@ -135,66 +136,19 @@ public sealed class WebhookServer : IAsyncDisposable
             long? recordedAt = null;
             if (long.TryParse(form["recordedAt"].ToString(), out var ms)) recordedAt = ms;
 
-            var audio = form.Files["audio"];
+            audioFile = form.Files["audio"];
             long? audioSize = null;
             if (long.TryParse(ctx.Request.Headers["X-Audio-Size"].ToString(), out var hdrSize)) audioSize = hdrSize;
-            else if (audio is not null) audioSize = audio.Length;
+            else if (audioFile is not null) audioSize = audioFile.Length;
 
             payload = new PebblePayload
             {
                 Transcription = form["transcription"].ToString(),
                 RecordedAtMs = recordedAt,
                 Client = form["client"].ToString(),
-                HasAudio = audio is not null,
+                HasAudio = audioFile is not null,
                 AudioSizeBytes = audioSize,
             };
-
-            // Pebble normally transcribes on-device; this only fires for a genuinely audio-only
-            // webhook, and never overrides a transcription Pebble already sent.
-            if (string.IsNullOrWhiteSpace(payload.Transcription) && audio is not null && _config.WhisperAsr.Enabled)
-            {
-                try
-                {
-                    using var audioBytes = new MemoryStream();
-                    await audio.CopyToAsync(audioBytes, ctx.RequestAborted);
-                    var audioMemory = audioBytes.GetBuffer().AsMemory(0, (int)audioBytes.Length);
-
-                    ReadOnlyMemory<byte> uploadMemory = audioMemory;
-                    var uploadFileName = audio.FileName;
-
-                    try
-                    {
-                        var (transcodedAudio, transcodedName, _) = await AudioDecoder.EnsureWavAsync(
-                            audioMemory, audio.FileName, ctx.RequestAborted);
-                        uploadMemory = transcodedAudio;
-                        uploadFileName = transcodedName;
-                        if (uploadMemory.Length != audioMemory.Length || !uploadMemory.Equals(audioMemory))
-                        {
-                            _log.Info($"Transcoded audio from {remote} ({audioMemory.Length} bytes, '{audio.FileName}') to WAV ({uploadMemory.Length} bytes) for Whisper ASR");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _log.Warn($"Audio pre-decoding to WAV failed ({ex.Message}), uploading original audio: {uploadFileName}");
-                    }
-
-                    using var whisperAsr = new WhisperAsrClient(_config.WhisperAsr, _log);
-                    var text = await whisperAsr.TranscribeAsync(uploadMemory, uploadFileName, ctx.RequestAborted);
-                    if (text is not null)
-                    {
-                        _log.Info($"Whisper ASR transcribed audio from {remote} ({uploadMemory.Length} bytes): \"{text}\"");
-                        payload = payload with { Transcription = text };
-                    }
-                    else
-                    {
-                        _log.Warn($"Whisper ASR returned no usable text from {remote} ({uploadMemory.Length} bytes audio) — falling back to normal handling (will return 422 if no text)");
-                    }
-                }
-                catch (Exception ex) when (ex is WhisperAsrApiException or WhisperAsrAudioException or HttpRequestException or IOException or TaskCanceledException)
-                {
-                    _log.Warn($"Whisper ASR transcription failed, falling back to normal handling: {ex.Message}");
-                }
-            }
         }
         catch (Exception ex)
         {
@@ -202,6 +156,53 @@ public sealed class WebhookServer : IAsyncDisposable
             WebhookFailed?.Invoke("Could not parse the webhook body");
             return Results.Json(new { ok = false, error = new { message = "could not parse multipart body" } },
                 statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        // Pebble normally transcribes on-device; this only fires for a genuinely audio-only
+        // webhook, and never overrides a transcription Pebble already sent.
+        if (string.IsNullOrWhiteSpace(payload.Transcription) && audioFile is not null && _config.WhisperAsr.Enabled)
+        {
+            try
+            {
+                using var audioBytes = new MemoryStream();
+                await audioFile.CopyToAsync(audioBytes, ctx.RequestAborted);
+                var audioMemory = audioBytes.GetBuffer().AsMemory(0, (int)audioBytes.Length);
+
+                ReadOnlyMemory<byte> uploadMemory = audioMemory;
+                var uploadFileName = audioFile.FileName;
+
+                try
+                {
+                    var (transcodedAudio, transcodedName, _) = await AudioDecoder.EnsureWavAsync(
+                        audioMemory, audioFile.FileName, ctx.RequestAborted);
+                    uploadMemory = transcodedAudio;
+                    uploadFileName = transcodedName;
+                    if (uploadMemory.Length != audioMemory.Length || !uploadMemory.Equals(audioMemory))
+                    {
+                        _log.Info($"Transcoded audio from {remote} ({audioMemory.Length} bytes, '{audioFile.FileName}') to WAV ({uploadMemory.Length} bytes) for Whisper ASR");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _log.Warn($"Audio pre-decoding to WAV failed ({ex.Message}), uploading original audio: {uploadFileName}");
+                }
+
+                using var whisperAsr = new WhisperAsrClient(_config.WhisperAsr, _log);
+                var text = await whisperAsr.TranscribeAsync(uploadMemory, uploadFileName, ctx.RequestAborted);
+                if (text is not null)
+                {
+                    _log.Info($"Whisper ASR transcribed audio from {remote} ({uploadMemory.Length} bytes): \"{text}\"");
+                    payload = payload with { Transcription = text };
+                }
+                else
+                {
+                    _log.Warn($"Whisper ASR returned no usable text from {remote} ({uploadMemory.Length} bytes audio) — falling back to normal handling (will return 422 if no text)");
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Whisper ASR transcription failed, falling back to normal handling: {ex.Message}");
+            }
         }
 
         _log.Info($"Webhook from {remote}: client='{payload.Client}', " +

@@ -395,30 +395,48 @@ public static class EmbeddedWhisperEngine
             builder.WithLanguage("auto");
         }
 
-        using var processor = builder.Build();
-        using var wavStream = new MemoryStream(wavMemory.ToArray());
-
-        var sw = Stopwatch.StartNew();
-        var sb = new StringBuilder();
-
-        await foreach (var segment in processor.ProcessAsync(wavStream, token))
+        WhisperProcessor? processor = null;
+        try
         {
-            if (!string.IsNullOrWhiteSpace(segment.Text))
+            processor = builder.Build();
+            using var wavStream = new MemoryStream(wavMemory.ToArray());
+
+            var sw = Stopwatch.StartNew();
+            var sb = new StringBuilder();
+
+            await foreach (var segment in processor.ProcessAsync(wavStream, token))
             {
-                sb.Append(segment.Text);
+                if (!string.IsNullOrWhiteSpace(segment.Text))
+                {
+                    sb.Append(segment.Text);
+                }
+            }
+            sw.Stop();
+
+            var text = sb.ToString().Trim();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                log?.Info($"Embedded Whisper: finished in {sw.ElapsedMilliseconds}ms with empty transcription");
+                return null;
+            }
+
+            log?.Info($"Embedded Whisper: transcribed in {sw.ElapsedMilliseconds}ms ({text.Length} chars): \"{text}\"");
+            return text;
+        }
+        finally
+        {
+            if (processor != null)
+            {
+                try
+                {
+                    await processor.DisposeAsync();
+                }
+                catch (Exception ex)
+                {
+                    log?.Warn($"Embedded Whisper: error disposing processor: {ex.Message}");
+                }
             }
         }
-        sw.Stop();
-
-        var text = sb.ToString().Trim();
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            log?.Info($"Embedded Whisper: finished in {sw.ElapsedMilliseconds}ms with empty transcription");
-            return null;
-        }
-
-        log?.Info($"Embedded Whisper: transcribed in {sw.ElapsedMilliseconds}ms ({text.Length} chars): \"{text}\"");
-        return text;
     }
 
     /// <summary>
@@ -438,9 +456,26 @@ public static class EmbeddedWhisperEngine
         using var testStream = new MemoryStream(testWav);
 
         var builder = factory.CreateBuilder().WithLanguage("en");
-        using var processor = builder.Build();
-
-        await foreach (var _ in processor.ProcessAsync(testStream, ct)) { }
+        WhisperProcessor? processor = null;
+        try
+        {
+            processor = builder.Build();
+            await foreach (var _ in processor.ProcessAsync(testStream, ct)) { }
+        }
+        finally
+        {
+            if (processor != null)
+            {
+                try
+                {
+                    await processor.DisposeAsync();
+                }
+                catch (Exception ex)
+                {
+                    log?.Warn($"Embedded Whisper: error disposing test processor: {ex.Message}");
+                }
+            }
+        }
         sw.Stop();
 
         var modelName = string.IsNullOrWhiteSpace(config.Model) ? "base.en" : config.Model;

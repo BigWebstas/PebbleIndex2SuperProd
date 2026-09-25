@@ -72,6 +72,12 @@ public class WhisperAsrClientTests
     }
 
     [Fact]
+    public void WhisperProcessor_ImplementsIAsyncDisposable()
+    {
+        Assert.True(typeof(IAsyncDisposable).IsAssignableFrom(typeof(WhisperProcessor)));
+    }
+
+    [Fact]
     public void WhisperAsrConfig_Mode_InfersEmbeddedByDefault()
     {
         var cfg = new AppConfig.WhisperAsrConfig();
