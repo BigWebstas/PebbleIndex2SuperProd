@@ -89,7 +89,7 @@ Two setups need an extra step first:
 ```bash
 docker run -d -p 9000:9000 -e ASR_MODEL=base onerahmet/openai-whisper-asr-webservice:latest
 ```
-Audio files (including Pebble's native `.m4a` files and `.wav` recordings) are POSTed directly to `/asr` as multipart form-data. The container decodes compressed audio internally via its bundled ffmpeg. It's a fallback only: Pebble's own transcription is always used when present, and this only fires for a genuinely audio-only webhook.
+Audio files (including Pebble's native `.m4a` files and `.wav` recordings) are POSTed directly to `/asr` as multipart form-data. When local ffmpeg is available, Index2SP automatically pre-transcodes compressed containers like `.m4a` into clean 16kHz mono WAV audio to guarantee seamless compatibility with Whisper container stdin pipes. It's a fallback only: Pebble's own transcription is always used when present, and this only fires for a genuinely audio-only webhook.
 
 **Web search** ("search the web for...", "google...", "what is the latest version of X") searches
 via whichever provider is selected for classification — Claude and Gemini each have a real

@@ -8,7 +8,7 @@ public readonly record struct DecodedAudio(byte[] Data, int Rate, int Width, int
 
 /// <summary>
 /// Decodes audio clips (WAV or Pebble's M4A voice notes) into raw linear PCM samples
-/// formatted for the Wyoming protocol.
+/// or packages them into standard WAV containers for Whisper ASR.
 /// </summary>
 public static class AudioDecoder
 {
@@ -152,6 +152,85 @@ public static class AudioDecoder
         return false;
     }
 
+    /// <summary>
+    /// Packages raw PCM samples into a standard 44-byte RIFF/WAVE header and data chunk.
+    /// </summary>
+    public static byte[] ToWav(ReadOnlySpan<byte> pcmData, int sampleRate = 16000, short channels = 1, short bitsPerSample = 16)
+    {
+        var wav = new byte[44 + pcmData.Length];
+        var span = wav.AsSpan();
+
+        // RIFF header
+        "RIFF"u8.CopyTo(span[..4]);
+        BinaryPrimitives.WriteInt32LittleEndian(span.Slice(4, 4), 36 + pcmData.Length);
+        "WAVE"u8.CopyTo(span.Slice(8, 4));
+
+        // fmt chunk
+        "fmt "u8.CopyTo(span.Slice(12, 4));
+        BinaryPrimitives.WriteInt32LittleEndian(span.Slice(16, 4), 16); // SubChunk1Size for PCM
+        BinaryPrimitives.WriteInt16LittleEndian(span.Slice(20, 2), 1);  // AudioFormat 1 = PCM
+        BinaryPrimitives.WriteInt16LittleEndian(span.Slice(22, 2), channels);
+        BinaryPrimitives.WriteInt32LittleEndian(span.Slice(24, 4), sampleRate);
+        var bytesPerSample = bitsPerSample / 8;
+        var byteRate = sampleRate * channels * bytesPerSample;
+        BinaryPrimitives.WriteInt32LittleEndian(span.Slice(28, 4), byteRate);
+        var blockAlign = (short)(channels * bytesPerSample);
+        BinaryPrimitives.WriteInt16LittleEndian(span.Slice(32, 2), blockAlign);
+        BinaryPrimitives.WriteInt16LittleEndian(span.Slice(34, 2), bitsPerSample);
+
+        // data chunk
+        "data"u8.CopyTo(span.Slice(36, 4));
+        BinaryPrimitives.WriteInt32LittleEndian(span.Slice(40, 4), pcmData.Length);
+        pcmData.CopyTo(span.Slice(44));
+
+        return wav;
+    }
+
+    /// <summary>
+    /// Packages decoded PCM audio into a standard 44-byte RIFF/WAVE container (.wav).
+    /// </summary>
+    public static byte[] ToWav(DecodedAudio decoded) =>
+        ToWav(decoded.Data, decoded.Rate, (short)decoded.Channels, (short)(decoded.Width * 8));
+
+    /// <summary>
+    /// If the audio is already an uncompressed PCM WAV, returns the original bytes as-is.
+    /// Otherwise, if ffmpeg is available on the system, decodes the audio and packages it as a pristine
+    /// 16kHz 16-bit mono WAV. Whisper ASR web service instances (such as onerahmet/openai-whisper-asr-webservice)
+    /// feed input to ffmpeg via stdin pipe ('pipe:'), which is non-seekable and fails on MP4/M4A containers.
+    /// Pre-decoding locally via temporary file ensures seeking succeeds and produces a clean WAV that
+    /// Whisper ASR reads effortlessly.
+    /// If ffmpeg is not available, returns the original audio unaltered with detected metadata as a fallback.
+    /// </summary>
+    public static async Task<(ReadOnlyMemory<byte> Audio, string FileName, string ContentType)> EnsureWavAsync(
+        ReadOnlyMemory<byte> audio,
+        string? fileName = null,
+        CancellationToken ct = default)
+    {
+        if (audio.IsEmpty)
+            return (audio, fileName ?? "audio.wav", "audio/wav");
+
+        // 1. If it's already an uncompressed PCM WAV, return as-is
+        if (TryReadPcmWav(audio.Span, out _))
+        {
+            var name = !string.IsNullOrWhiteSpace(fileName) && fileName.EndsWith(".wav", StringComparison.OrdinalIgnoreCase)
+                ? fileName
+                : "recording.wav";
+            return (audio, name, "audio/wav");
+        }
+
+        // 2. If ffmpeg is available, decode to 16kHz mono PCM and wrap in WAV
+        if (IsFfmpegAvailable)
+        {
+            var decoded = await DecodeAsync(audio, fileName, ct);
+            var wav = ToWav(decoded);
+            return (wav, "recording.wav", "audio/wav");
+        }
+
+        // 3. Fallback: return original audio with detected metadata
+        var (detectedName, mediaType) = WhisperAsrClient.DetectAudioMetadata(audio.Span, fileName);
+        return (audio, detectedName, mediaType);
+    }
+
     private static async Task<DecodedAudio> DecodeWithFfmpegAsync(ReadOnlyMemory<byte> audio, string? fileName, CancellationToken ct)
     {
         if (!IsFfmpegAvailable)
@@ -256,7 +335,7 @@ public static class AudioDecoder
             if (proc.ExitCode != 0)
             {
                 var stderr = System.Text.Encoding.UTF8.GetString(stderrStream.ToArray());
-                throw new WyomingAudioException($"ffmpeg failed with exit code {proc.ExitCode}: {stderr.Trim()}");
+                throw new WhisperAsrAudioException($"ffmpeg failed with exit code {proc.ExitCode}: {stderr.Trim()}");
             }
 
             return stdoutStream.ToArray();

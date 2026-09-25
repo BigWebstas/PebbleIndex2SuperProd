@@ -157,17 +157,37 @@ public sealed class WebhookServer : IAsyncDisposable
                 {
                     using var audioBytes = new MemoryStream();
                     await audio.CopyToAsync(audioBytes, ctx.RequestAborted);
-                    using var whisperAsr = new WhisperAsrClient(_config.WhisperAsr, _log);
                     var audioMemory = audioBytes.GetBuffer().AsMemory(0, (int)audioBytes.Length);
-                    var text = await whisperAsr.TranscribeAsync(audioMemory, audio.FileName, ctx.RequestAborted);
+
+                    ReadOnlyMemory<byte> uploadMemory = audioMemory;
+                    var uploadFileName = audio.FileName;
+
+                    try
+                    {
+                        var (transcodedAudio, transcodedName, _) = await AudioDecoder.EnsureWavAsync(
+                            audioMemory, audio.FileName, ctx.RequestAborted);
+                        uploadMemory = transcodedAudio;
+                        uploadFileName = transcodedName;
+                        if (uploadMemory.Length != audioMemory.Length || !uploadMemory.Equals(audioMemory))
+                        {
+                            _log.Info($"Transcoded audio from {remote} ({audioMemory.Length} bytes, '{audio.FileName}') to WAV ({uploadMemory.Length} bytes) for Whisper ASR");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Warn($"Audio pre-decoding to WAV failed ({ex.Message}), uploading original audio: {uploadFileName}");
+                    }
+
+                    using var whisperAsr = new WhisperAsrClient(_config.WhisperAsr, _log);
+                    var text = await whisperAsr.TranscribeAsync(uploadMemory, uploadFileName, ctx.RequestAborted);
                     if (text is not null)
                     {
-                        _log.Info($"Whisper ASR transcribed audio from {remote} ({audioBytes.Length} bytes): \"{text}\"");
+                        _log.Info($"Whisper ASR transcribed audio from {remote} ({uploadMemory.Length} bytes): \"{text}\"");
                         payload = payload with { Transcription = text };
                     }
                     else
                     {
-                        _log.Warn($"Whisper ASR returned no usable text from {remote} ({audioBytes.Length} bytes audio) — falling back to normal handling (will return 422 if no text)");
+                        _log.Warn($"Whisper ASR returned no usable text from {remote} ({uploadMemory.Length} bytes audio) — falling back to normal handling (will return 422 if no text)");
                     }
                 }
                 catch (Exception ex) when (ex is WhisperAsrApiException or WhisperAsrAudioException or HttpRequestException or IOException or TaskCanceledException)

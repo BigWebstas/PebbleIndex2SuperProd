@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -340,6 +341,137 @@ public class WhisperAsrClientTests
         var (customName, customMime) = WhisperAsrClient.DetectAudioMetadata(new byte[10], "recording.mp3");
         Assert.Equal("recording.mp3", customName);
         Assert.Equal("audio/mpeg", customMime);
+    }
+
+    [Fact]
+    public void ToWav_CreatesValidHeaderAndData()
+    {
+        var pcm = new byte[] { 0x10, 0x20, 0x30, 0x40 };
+        var wav = AudioDecoder.ToWav(pcm, sampleRate: 16000, channels: 1, bitsPerSample: 16);
+
+        Assert.Equal(44 + pcm.Length, wav.Length);
+        Assert.Equal((byte)'R', wav[0]);
+        Assert.Equal((byte)'I', wav[1]);
+        Assert.Equal((byte)'F', wav[2]);
+        Assert.Equal((byte)'F', wav[3]);
+        Assert.Equal((byte)'W', wav[8]);
+        Assert.Equal((byte)'A', wav[9]);
+        Assert.Equal((byte)'V', wav[10]);
+        Assert.Equal((byte)'E', wav[11]);
+    }
+
+    [Fact]
+    public void ToWav_RoundTripsWith_TryReadPcmWav()
+    {
+        var pcm = new byte[320];
+        new Random(123).NextBytes(pcm);
+
+        var wav = AudioDecoder.ToWav(pcm, sampleRate: 16000, channels: 1, bitsPerSample: 16);
+        var success = AudioDecoder.TryReadPcmWav(wav, out var decoded);
+
+        Assert.True(success);
+        Assert.Equal(16000, decoded.Rate);
+        Assert.Equal(1, decoded.Channels);
+        Assert.Equal(2, decoded.Width);
+        Assert.Equal(pcm, decoded.Data);
+    }
+
+    [Fact]
+    public void ToWav_FromDecodedAudio_RoundTrips()
+    {
+        var pcm = new byte[640];
+        new Random(456).NextBytes(pcm);
+        var original = new DecodedAudio(pcm, Rate: 24000, Width: 2, Channels: 1);
+
+        var wav = AudioDecoder.ToWav(original);
+        var success = AudioDecoder.TryReadPcmWav(wav, out var decoded);
+
+        Assert.True(success);
+        Assert.Equal(24000, decoded.Rate);
+        Assert.Equal(1, decoded.Channels);
+        Assert.Equal(2, decoded.Width);
+        Assert.Equal(pcm, decoded.Data);
+    }
+
+    [Fact]
+    public async Task EnsureWavAsync_ReturnsSameForPcmWav()
+    {
+        var pcm = new byte[160];
+        var wav = AudioDecoder.ToWav(pcm, 16000, 1, 16);
+
+        var (audio, fileName, mime) = await AudioDecoder.EnsureWavAsync(wav, "original.wav");
+
+        Assert.True(audio.Span.SequenceEqual(wav));
+        Assert.Equal("original.wav", fileName);
+        Assert.Equal("audio/wav", mime);
+    }
+
+    [Fact]
+    public async Task EnsureWavAsync_HandlesEmptyAudio()
+    {
+        var (audio, fileName, mime) = await AudioDecoder.EnsureWavAsync(ReadOnlyMemory<byte>.Empty, "empty.wav");
+
+        Assert.True(audio.IsEmpty);
+        Assert.Equal("empty.wav", fileName);
+        Assert.Equal("audio/wav", mime);
+    }
+
+    [Fact]
+    public async Task EnsureWavAsync_TranscodesWithFfmpeg_WhenAvailable()
+    {
+        if (!AudioDecoder.IsFfmpegAvailable) return;
+
+        var tempM4a = Path.Combine(Path.GetTempPath(), $"test_{Guid.NewGuid():N}.m4a");
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "ffmpeg",
+                Arguments = $"-y -f lavfi -i sine=frequency=1000:duration=0.2 -c:a aac -b:a 64k {tempM4a}",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            using var proc = Process.Start(psi);
+            Assert.NotNull(proc);
+            await proc.WaitForExitAsync();
+            Assert.Equal(0, proc.ExitCode);
+
+            var m4aBytes = await File.ReadAllBytesAsync(tempM4a);
+            var (wavAudio, wavName, wavMime) = await AudioDecoder.EnsureWavAsync(m4aBytes, "test.m4a");
+
+            Assert.Equal("recording.wav", wavName);
+            Assert.Equal("audio/wav", wavMime);
+            Assert.True(AudioDecoder.TryReadPcmWav(wavAudio.Span, out var decoded));
+            Assert.Equal(16000, decoded.Rate);
+            Assert.Equal(1, decoded.Channels);
+            Assert.Equal(2, decoded.Width);
+            Assert.True(decoded.Data.Length > 0);
+        }
+        finally
+        {
+            try { if (File.Exists(tempM4a)) File.Delete(tempM4a); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task EnsureWavAsync_TranscodesRealM4aIfPresent()
+    {
+        if (!AudioDecoder.IsFfmpegAvailable) return;
+        const string jfkPath = "/tmp/jfk.m4a";
+        if (!File.Exists(jfkPath)) return;
+
+        var m4aBytes = await File.ReadAllBytesAsync(jfkPath);
+        var (wavAudio, wavName, wavMime) = await AudioDecoder.EnsureWavAsync(m4aBytes, "jfk.m4a");
+
+        Assert.Equal("recording.wav", wavName);
+        Assert.Equal("audio/wav", wavMime);
+        Assert.True(AudioDecoder.TryReadPcmWav(wavAudio.Span, out var decoded));
+        Assert.Equal(16000, decoded.Rate);
+        Assert.Equal(1, decoded.Channels);
+        Assert.Equal(2, decoded.Width);
+        Assert.True(decoded.Data.Length > 0);
     }
 
     private static byte[] CreateWavBytes(byte[] pcmData, int sampleRate, short channels, short bitsPerSample, short audioFormat = 1)
