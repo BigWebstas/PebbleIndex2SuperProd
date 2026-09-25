@@ -34,7 +34,10 @@ if [ ! -x "$publish_dir/Index2SP" ]; then
   dotnet publish "$project" -c Release -r "$rid" --self-contained true \
     -o "$publish_dir" "/p:Version=$version"
   if [ -d "$publish_dir/runtimes" ]; then
-    find "$publish_dir/runtimes" -mindepth 1 -maxdepth 1 -type d ! -name "$rid" -exec rm -rf {} +
+    find "$publish_dir/runtimes" -mindepth 1 -maxdepth 1 -type d ! -name "$rid" ! -name "noavx" -exec rm -rf {} +
+    if [ -d "$publish_dir/runtimes/noavx" ]; then
+      find "$publish_dir/runtimes/noavx" -mindepth 1 -maxdepth 1 -type d ! -name "$rid" -exec rm -rf {} +
+    fi
   fi
 fi
 chmod +x "$publish_dir/Index2SP"

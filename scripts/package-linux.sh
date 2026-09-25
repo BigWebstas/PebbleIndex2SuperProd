@@ -22,7 +22,10 @@ pack() {
     -o "$out" "/p:Version=$version"
 
   if [ -d "$out/runtimes" ]; then
-    find "$out/runtimes" -mindepth 1 -maxdepth 1 -type d ! -name "$rid" -exec rm -rf {} +
+    find "$out/runtimes" -mindepth 1 -maxdepth 1 -type d ! -name "$rid" ! -name "noavx" -exec rm -rf {} +
+    if [ -d "$out/runtimes/noavx" ]; then
+      find "$out/runtimes/noavx" -mindepth 1 -maxdepth 1 -type d ! -name "$rid" -exec rm -rf {} +
+    fi
   fi
 
   [ -x "$out/Index2SP" ] || { echo "ERROR: $out/Index2SP missing"; exit 1; }

@@ -48,25 +48,37 @@
     <!-- Embedded Whisper speech-to-text engine (whisper.cpp) -->
     <PackageReference Include="Whisper.net" Version="1.9.1" />
     <PackageReference Include="Whisper.net.Runtime" Version="1.9.1" GeneratePathProperty="true" />
+    <PackageReference Include="Whisper.net.Runtime.NoAvx" Version="1.9.1" GeneratePathProperty="true" />
   </ItemGroup>
 
   <!-- Embed native whisper.cpp binaries directly in the assembly so single-file/AppImage/etc.
        can self-extract to the user config directory if native libraries are not found on disk. -->
   <ItemGroup>
+    <!-- Standard runtimes (AVX-optimized for modern CPUs) -->
     <EmbeddedResource Include="$(PkgWhisper_net_Runtime)/build/win-x64/*.*" LogicalName="whisper_runtimes.win-x64.%(Filename)%(Extension)" />
     <EmbeddedResource Include="$(PkgWhisper_net_Runtime)/build/win-arm64/*.*" LogicalName="whisper_runtimes.win-arm64.%(Filename)%(Extension)" />
     <EmbeddedResource Include="$(PkgWhisper_net_Runtime)/build/linux-x64/*.*" LogicalName="whisper_runtimes.linux-x64.%(Filename)%(Extension)" />
     <EmbeddedResource Include="$(PkgWhisper_net_Runtime)/build/linux-arm64/*.*" LogicalName="whisper_runtimes.linux-arm64.%(Filename)%(Extension)" />
+
+    <!-- NoAVX fallback runtimes (for CPUs/VMs without AVX support) -->
+    <EmbeddedResource Include="$(PkgWhisper_net_Runtime_NoAvx)/build/win-x64/*.*" LogicalName="whisper_runtimes.noavx.win-x64.%(Filename)%(Extension)" />
+    <EmbeddedResource Include="$(PkgWhisper_net_Runtime_NoAvx)/build/win-x86/*.*" LogicalName="whisper_runtimes.noavx.win-x86.%(Filename)%(Extension)" />
+    <EmbeddedResource Include="$(PkgWhisper_net_Runtime_NoAvx)/build/linux-x64/*.*" LogicalName="whisper_runtimes.noavx.linux-x64.%(Filename)%(Extension)" />
   </ItemGroup>
 
   <!-- Copy native Whisper libraries for the target runtime to the publish output alongside Index2SP -->
   <Target Name="EnsureWhisperRuntimesCopied" AfterTargets="Publish" Condition="'$(RuntimeIdentifier)' != ''">
     <ItemGroup>
       <_WhisperRidFiles Include="$(PkgWhisper_net_Runtime)/build/$(RuntimeIdentifier)/*.*" />
+      <_WhisperNoAvxRidFiles Include="$(PkgWhisper_net_Runtime_NoAvx)/build/$(RuntimeIdentifier)/*.*" Condition="Exists('$(PkgWhisper_net_Runtime_NoAvx)/build/$(RuntimeIdentifier)')" />
     </ItemGroup>
     <Copy SourceFiles="@(_WhisperRidFiles)"
           DestinationFolder="$(PublishDir)runtimes/$(RuntimeIdentifier)"
           SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(_WhisperNoAvxRidFiles)"
+          DestinationFolder="$(PublishDir)runtimes/noavx/$(RuntimeIdentifier)"
+          SkipUnchangedFiles="true"
+          Condition="'@(_WhisperNoAvxRidFiles)' != ''" />
   </Target>
 
 </Project>

@@ -73,8 +73,15 @@ foreach ($variant in $targets) {
     $runtimesDir = Join-Path $publishDir 'runtimes'
     if (Test-Path $runtimesDir) {
         Get-ChildItem -Directory $runtimesDir |
-            Where-Object { $_.Name -ne $Runtime } |
+            Where-Object { $_.Name -ne $Runtime -and $_.Name -ne 'noavx' } |
             Remove-Item -Recurse -Force
+
+        $noavxDir = Join-Path $runtimesDir 'noavx'
+        if (Test-Path $noavxDir) {
+            Get-ChildItem -Directory $noavxDir |
+                Where-Object { $_.Name -ne $Runtime } |
+                Remove-Item -Recurse -Force
+        }
     }
 
     $exe = Join-Path $publishDir 'Index2SP.exe'

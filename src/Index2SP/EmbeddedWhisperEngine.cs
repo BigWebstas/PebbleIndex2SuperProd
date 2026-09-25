@@ -197,10 +197,11 @@ public static class EmbeddedWhisperEngine
                 foreach (var dir in candidates)
                 {
                     var libPath = Path.Combine(dir, "runtimes", rid, nativeLibName);
-                    if (File.Exists(libPath))
+                    var noavxPath = Path.Combine(dir, "runtimes", "noavx", rid, nativeLibName);
+                    if (File.Exists(libPath) || File.Exists(noavxPath))
                     {
                         selectedBaseDir = dir;
-                        log?.Info($"Embedded Whisper: found native library at {libPath}");
+                        log?.Info($"Embedded Whisper: found native runtime in {dir}");
                         break;
                     }
                 }
@@ -208,11 +209,27 @@ public static class EmbeddedWhisperEngine
                 // 2. If not found in any candidate directory, extract from embedded resources into userConfigDir
                 if (selectedBaseDir == null)
                 {
-                    log?.Info($"Embedded Whisper: native library '{nativeLibName}' not found on disk. Extracting from embedded resources...");
-                    var extracted = ExtractEmbeddedRuntimes(rid, userConfigDir, log);
-                    if (extracted)
+                    log?.Info($"Embedded Whisper: native runtime for '{rid}' not found on disk. Extracting from embedded resources...");
+                    var stdExtracted = ExtractEmbeddedRuntimes("whisper_runtimes." + rid + ".", Path.Combine(userConfigDir, "runtimes", rid), log);
+                    var noavxExtracted = ExtractEmbeddedRuntimes("whisper_runtimes.noavx." + rid + ".", Path.Combine(userConfigDir, "runtimes", "noavx", rid), log);
+                    if (stdExtracted || noavxExtracted)
                     {
                         selectedBaseDir = userConfigDir;
+                    }
+                }
+                else
+                {
+                    // Also ensure NoAVX fallback is available in userConfigDir in case the CPU lacks AVX instructions
+                    var noavxInSelected = Path.Combine(selectedBaseDir, "runtimes", "noavx", rid, nativeLibName);
+                    if (!File.Exists(noavxInSelected))
+                    {
+                        var noavxExtracted = ExtractEmbeddedRuntimes("whisper_runtimes.noavx." + rid + ".", Path.Combine(userConfigDir, "runtimes", "noavx", rid), log);
+                        if (noavxExtracted)
+                        {
+                            // Also ensure standard is extracted to userConfigDir so userConfigDir has the complete runtime set
+                            ExtractEmbeddedRuntimes("whisper_runtimes." + rid + ".", Path.Combine(userConfigDir, "runtimes", rid), log);
+                            selectedBaseDir = userConfigDir;
+                        }
                     }
                 }
 
@@ -288,24 +305,21 @@ public static class EmbeddedWhisperEngine
         return "libwhisper.so";
     }
 
-    private static bool ExtractEmbeddedRuntimes(string rid, string baseDir, Logger? log)
+    private static bool ExtractEmbeddedRuntimes(string prefix, string targetDir, Logger? log)
     {
         try
         {
             var asm = typeof(EmbeddedWhisperEngine).Assembly;
-            var prefix = "whisper_runtimes." + rid + ".";
-            var targetDir = Path.Combine(baseDir, "runtimes", rid);
-            Directory.CreateDirectory(targetDir);
-
             var resourceNames = asm.GetManifestResourceNames()
                 .Where(n => n.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
             if (resourceNames.Count == 0)
             {
-                log?.Warn($"Embedded Whisper: no embedded native resources found for '{rid}' (prefix '{prefix}')");
                 return false;
             }
+
+            Directory.CreateDirectory(targetDir);
 
             foreach (var resName in resourceNames)
             {

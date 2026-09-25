@@ -59,6 +59,8 @@ public class WhisperAsrClientTests
         var names = asm.GetManifestResourceNames();
         Assert.Contains(names, n => n.StartsWith("whisper_runtimes.win-x64.whisper.dll", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(names, n => n.StartsWith("whisper_runtimes.linux-x64.libwhisper.so", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(names, n => n.StartsWith("whisper_runtimes.noavx.win-x64.whisper.dll", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(names, n => n.StartsWith("whisper_runtimes.noavx.linux-x64.libwhisper.so", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
