@@ -31,42 +31,6 @@ public class PayloadConverterTests
     }
 
     [Fact]
-    public void ToTask_AudioOnlyFallback_CreatesTaskWhenAudioPresent()
-    {
-        var payload = new PebblePayload
-        {
-            Transcription = "",
-            HasAudio = true,
-            AudioSizeBytes = 12345,
-            RecordedAtMs = 1727267400000
-        };
-        var config = NewConfig();
-        config.AudioOnlyFallback = true;
-        config.AudioOnlyFallbackTitle = "Voice memo";
-
-        var task = PayloadConverter.ToTask(payload, config);
-
-        Assert.StartsWith("Voice memo (", task.Title);
-        Assert.Contains("[Audio recording attached — no transcription recognized]", task.Notes);
-        Assert.Contains("12.1 KB", task.Notes);
-    }
-
-    [Fact]
-    public void ToTask_AudioOnlyFallback_Disabled_ThrowsConversionException()
-    {
-        var payload = new PebblePayload
-        {
-            Transcription = "",
-            HasAudio = true,
-            AudioSizeBytes = 12345
-        };
-        var config = NewConfig();
-        config.AudioOnlyFallback = false;
-
-        Assert.Throws<PayloadConverter.ConversionException>(() => PayloadConverter.ToTask(payload, config));
-    }
-
-    [Fact]
     public void ToTask_TruncatesTitleAtConfiguredLength()
     {
         var payload = new PebblePayload { Transcription = new string('a', 50) };

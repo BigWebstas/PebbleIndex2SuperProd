@@ -45,18 +45,6 @@ public sealed class AppConfig
     /// This is what Pebble's "send test event" produces. Blank disables the check.</summary>
     public string TestEventPhrase { get; set; } = "Index webhook test event";
 
-    /// <summary>
-    /// When true (the default), if a webhook arrives with an audio clip but no transcription text
-    /// (e.g. set to 'audio only' mode, or speech recognition returned no text), Index2SP creates a
-    /// fallback task titled "Voice memo (timestamp)" instead of rejecting the webhook with HTTP 422.
-    /// </summary>
-    public bool AudioOnlyFallback { get; set; } = true;
-
-    /// <summary>
-    /// Default title prefix for fallback audio-only tasks (default: "Voice memo").
-    /// </summary>
-    public string AudioOnlyFallbackTitle { get; set; } = "Voice memo";
-
     /// <summary>Seconds between retry passes for the disk-backed outbox — tasks that couldn't be
     /// delivered to Super Productivity when their webhook arrived. Clamped to 10–3600.</summary>
     public int OutboxRetrySeconds { get; set; } = 60;

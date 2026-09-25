@@ -10,8 +10,6 @@
   "outboxRetrySeconds": 60,
   "outboxMaxAttempts": 0,
   "testEventPhrase": "Index webhook test event",
-  "audioOnlyFallback": true,
-  "audioOnlyFallbackTitle": "Voice memo",
   "checkForUpdates": true,
   "superProductivity": {
     "baseUrl": "http://127.0.0.1:3876",

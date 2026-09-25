@@ -141,7 +141,7 @@ CI builds every push/PR; pushing a `v*` tag cuts a [GitHub Release](https://gith
 
 ## Limitations
 
-- Audio-only webhooks (and audio where speech recognition detects no usable text) automatically create a "Voice memo (timestamp)" fallback task (configurable via `"audioOnlyFallback"` and `"audioOnlyFallbackTitle"`), rather than being rejected with 422.
+- Audio-only webhooks are rejected (422) — no text, no task — unless speech recognition (Parakeet or Whisper) is enabled and transcribes usable text.
 - No recurring tasks or subtasks (the SP REST API doesn't support them).
 - Outbox retries check for an exact title+notes match before recreating a task, which covers a
   lost reply after Super Productivity actually created it — but not two genuinely separate
