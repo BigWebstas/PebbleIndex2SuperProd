@@ -288,7 +288,7 @@ public sealed class WebhookServer : IAsyncDisposable
             // One task per item — "bread, milk, eggs" becomes three separate tasks, not one.
             var outcomes = new List<TaskOutcome>();
             foreach (var item in shoppingItems)
-                outcomes.Add(await CreateOrQueueTaskAsync(sp, ForShoppingItem(taskReq, item, _config.TitleMaxLength)));
+                outcomes.Add(await CreateOrQueueTaskAsync(sp, ForShoppingItem(taskReq, item, _config.TitleMaxLength, routing.ShoppingMerchant)));
 
             var anyPermanentFailure = outcomes.Any(o => o.Error is not null);
             return Results.Json(new
@@ -317,7 +317,8 @@ public sealed class WebhookServer : IAsyncDisposable
     /// (null when this isn't a multi-item shopping capture), and whether the main Super
     /// Productivity task should be skipped because <see cref="AppConfig.AiClassifierConfig.ExclusiveRouting"/>
     /// is on and the transcription was successfully routed to Joplin/Calendar/Beeper instead.</summary>
-    private sealed record AiRoutingResult(List<string>? ShoppingItems, bool SkipSuperProductivityTask, string CaptureKind = "Task Created");
+    private sealed record AiRoutingResult(List<string>? ShoppingItems, bool SkipSuperProductivityTask, string CaptureKind = "Task Created",
+        string? ShoppingMerchant = null);
 
     /// <summary>Short, human phrase for the webhook-receipt notification — priority order matters
     /// when more than one flag is set (e.g. a note that's also date-stamped).</summary>
@@ -364,12 +365,14 @@ public sealed class WebhookServer : IAsyncDisposable
     }
 
     /// <summary>Clones <paramref name="template"/> (same notes/project/tags) with its title
-    /// replaced by one bare shopping item, capped the same way PayloadConverter caps titles.</summary>
-    private static SpTaskRequest ForShoppingItem(SpTaskRequest template, string item, int titleMaxLength)
+    /// replaced by one bare shopping item, prefixed with the merchant when the transcription named
+    /// one (e.g. "Home Depot - Nails"), capped the same way PayloadConverter caps titles.</summary>
+    private static SpTaskRequest ForShoppingItem(SpTaskRequest template, string item, int titleMaxLength, string? merchant)
     {
+        var title = string.IsNullOrWhiteSpace(merchant) ? item : $"{merchant} - {item}";
         return new SpTaskRequest
         {
-            Title = PayloadConverter.CapTitle(item, titleMaxLength),
+            Title = PayloadConverter.CapTitle(title, titleMaxLength),
             Notes = template.Notes,
             ProjectId = template.ProjectId,
             TagIds = template.TagIds is null ? null : new List<string>(template.TagIds),
@@ -488,7 +491,8 @@ public sealed class WebhookServer : IAsyncDisposable
             if (!string.IsNullOrWhiteSpace(shoppingProjectId))
                 taskReq.ProjectId = shoppingProjectId.Trim();
 
-            return new AiRoutingResult(result.ShoppingItems.Count > 0 ? result.ShoppingItems : null, false, "Shopping List Updated");
+            return new AiRoutingResult(result.ShoppingItems.Count > 0 ? result.ShoppingItems : null, false, "Shopping List Updated",
+                result.ShoppingMerchant);
         }
         catch (Exception ex) when (ex is SpApiException or HttpRequestException or TaskCanceledException)
         {

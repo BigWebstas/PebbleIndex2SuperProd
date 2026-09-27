@@ -38,7 +38,7 @@ public sealed class AiTaskClassifier : IDisposable
         string? ProjectId, List<string> TagIds, string? TaskTitle, bool IsNote, bool IsShopping, List<string> ShoppingItems,
         List<string> JoplinTagIds, bool IsCalendarEvent, string? EventTitle, DateTimeOffset? EventStart, DateTimeOffset? EventEnd,
         bool EventAllDay, bool IsMessage, string? MessageRecipient, string? MessageText, string? MessagePlatform,
-        bool IsWebSearch, string? WebSearchQuery);
+        bool IsWebSearch, string? WebSearchQuery, string? ShoppingMerchant);
 
     /// <param name="joplinTags">Existing Joplin tags, only consulted (and only asked of the AI)
     /// while <see cref="AppConfig.AiClassifierConfig.RequireTags"/> is on. Pass an empty list
@@ -676,6 +676,10 @@ public sealed class AiTaskClassifier : IDisposable
                 "distinct item to buy, each stripped down to just the item itself — e.g. [\"bread\"] from " +
                 "\"add bread to my shopping list\", or [\"bread\", \"milk\", \"eggs\"] from \"add bread, milk, " +
                 "and eggs to my shopping list\". [] when isShopping is false."),
+            new("shoppingMerchant", FieldKind.StringOrNull, "Only when isShopping is true and a specific " +
+                "store or merchant was named — e.g. \"Home Depot\" from \"I need to buy some nails at home " +
+                "depot\". Use the merchant's normal name/capitalization. Null when isShopping is false or no " +
+                "merchant was mentioned."),
         };
 
         if (requireTags)
@@ -833,6 +837,10 @@ public sealed class AiTaskClassifier : IDisposable
         var isNote = input.TryGetValue("isNote", out var nEl) && nEl.ValueKind == JsonValueKind.True;
         var isShopping = input.TryGetValue("isShopping", out var sEl) && sEl.ValueKind == JsonValueKind.True;
         var shoppingItems = ReadStringArray(input, "shoppingItems");
+        var shoppingMerchant = input.TryGetValue("shoppingMerchant", out var smEl) && smEl.ValueKind == JsonValueKind.String
+            ? smEl.GetString()
+            : null;
+        if (string.IsNullOrWhiteSpace(shoppingMerchant)) shoppingMerchant = null;
         var joplinTagIds = requireTags ? ReadStringArray(input, "joplinTagIds") : new List<string>();
 
         var isCalendarEvent = input.TryGetValue("isCalendarEvent", out var ceEl) && ceEl.ValueKind == JsonValueKind.True;
@@ -888,14 +896,15 @@ public sealed class AiTaskClassifier : IDisposable
 
         _log.Info($"AI classify: project={resolvedProjectId ?? "(none)"}, taskTitle={taskTitle ?? "(unchanged)"}, " +
                   $"tags=[{string.Join(',', resolvedTagIds)}], isNote={isNote}, isShopping={isShopping}, " +
-                  $"shoppingItems=[{string.Join(',', shoppingItems)}], joplinTags=[{string.Join(',', resolvedJoplinTagIds)}], " +
+                  $"shoppingItems=[{string.Join(',', shoppingItems)}]" + (isShopping ? $", shoppingMerchant={shoppingMerchant ?? "(none)"}" : "") +
+                  $", joplinTags=[{string.Join(',', resolvedJoplinTagIds)}], " +
                   $"isCalendarEvent={isCalendarEvent}" + (isCalendarEvent ? $", eventStart={eventStart:O}" : "") +
                   $", isMessage={isMessage}" + (isMessage ? $", messageRecipient={messageRecipient}, messagePlatform={messagePlatform ?? "(any)"}" : "") +
                   $", isWebSearch={isWebSearch}" + (isWebSearch ? $", webSearchQuery={webSearchQuery}" : ""));
 
         return new Classification(resolvedProjectId, resolvedTagIds, taskTitle, isNote, isShopping, shoppingItems, resolvedJoplinTagIds,
             isCalendarEvent, eventTitle, eventStart, eventEnd, eventAllDay, isMessage, messageRecipient, messageText, messagePlatform,
-            isWebSearch, webSearchQuery);
+            isWebSearch, webSearchQuery, shoppingMerchant);
     }
 
     private static DateTimeOffset? ReadDateTimeOffset(IReadOnlyDictionary<string, JsonElement> input, string key)
