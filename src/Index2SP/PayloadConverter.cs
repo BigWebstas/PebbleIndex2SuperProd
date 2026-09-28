@@ -42,6 +42,9 @@ public static class PayloadConverter
         if (config.SuperProductivity.TagIds is { Count: > 0 } tags)
             task.TagIds = tags.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim()).ToList();
 
+        if (config.SuperProductivity.TaskDurationMinutes > 0)
+            task.TimeEstimate = config.SuperProductivity.TaskDurationMinutes * 60_000L;
+
         return task;
     }
 

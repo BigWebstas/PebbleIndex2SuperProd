@@ -105,4 +105,26 @@ public class PayloadConverterTests
         Assert.Null(task.ProjectId);
         Assert.Null(task.TagIds);
     }
+
+    [Fact]
+    public void ToTask_AppliesStaticTaskDurationAsMilliseconds()
+    {
+        var config = NewConfig();
+        config.SuperProductivity.TaskDurationMinutes = 30;
+        var payload = new PebblePayload { Transcription = "Do the thing" };
+
+        var task = PayloadConverter.ToTask(payload, config);
+
+        Assert.Equal(30 * 60_000L, task.TimeEstimate);
+    }
+
+    [Fact]
+    public void ToTask_LeavesTimeEstimateNullWhenDurationNotConfigured()
+    {
+        var payload = new PebblePayload { Transcription = "Do the thing" };
+
+        var task = PayloadConverter.ToTask(payload, NewConfig());
+
+        Assert.Null(task.TimeEstimate);
+    }
 }

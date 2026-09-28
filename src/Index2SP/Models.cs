@@ -48,6 +48,11 @@ public sealed class SpTaskRequest
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<string>? TagIds { get; set; }
 
+    /// <summary>Estimated duration in milliseconds (Super Productivity's own unit for this field).</summary>
+    [JsonPropertyName("timeEstimate")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? TimeEstimate { get; set; }
+
     /// <summary>Date-only due date ("yyyy-MM-dd"), for an all-day item. Mutually exclusive with
     /// <see cref="DueWithTime"/> in practice — set one or the other, not both.</summary>
     [JsonPropertyName("dueDay")]

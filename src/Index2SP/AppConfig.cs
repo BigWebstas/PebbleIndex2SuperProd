@@ -455,6 +455,10 @@ public sealed class AppConfig
         /// <summary>Optional tag ids applied to every created task.</summary>
         public List<string> TagIds { get; set; } = new();
 
+        /// <summary>Optional time estimate (Super Productivity's "duration") applied to every
+        /// created task, in minutes. 0 = don't set one. Clamped 0–1440 (24h).</summary>
+        public int TaskDurationMinutes { get; set; } = 0;
+
         /// <summary>Optional: when the AI classifier (aiClassifier.enabled) detects a shopping /
         /// errands item, file it under this project instead of whatever project it would
         /// otherwise have picked. Blank = no override, the classifier's normal pick stands.
@@ -862,6 +866,7 @@ public sealed class AppConfig
             SuperProductivity.BaseUrl = "http://127.0.0.1:3876";
         SuperProductivity.BaseUrl = SuperProductivity.BaseUrl.TrimEnd('/');
         SuperProductivity.TagIds ??= new List<string>();
+        SuperProductivity.TaskDurationMinutes = Math.Clamp(SuperProductivity.TaskDurationMinutes, 0, 1440);
     }
 
     public static (string Host, int Port) ParseEndpoint(string? endpoint, int defaultPort = 9000)

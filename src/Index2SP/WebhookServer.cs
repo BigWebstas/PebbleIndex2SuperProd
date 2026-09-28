@@ -376,6 +376,7 @@ public sealed class WebhookServer : IAsyncDisposable
             Notes = template.Notes,
             ProjectId = template.ProjectId,
             TagIds = template.TagIds is null ? null : new List<string>(template.TagIds),
+            TimeEstimate = template.TimeEstimate,
         };
     }
 

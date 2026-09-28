@@ -255,6 +255,19 @@ public class AppConfigTests : IDisposable
     }
 
     [Theory]
+    [InlineData(0, 0)]    // 0 = don't set an estimate, left alone
+    [InlineData(-5, 0)]
+    [InlineData(999999, 1440)]
+    public void Normalize_ClampsTaskDurationMinutes(int input, int expected)
+    {
+        File.WriteAllText(ConfigPath, $$"""{ "superProductivity": { "taskDurationMinutes": {{input}} } }""");
+
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.Equal(expected, config.SuperProductivity.TaskDurationMinutes);
+    }
+
+    [Theory]
     [InlineData(1, 2)]
     [InlineData(999, 30)]
     public void Normalize_ClampsTelegramTimeoutSeconds(int input, int expected)
