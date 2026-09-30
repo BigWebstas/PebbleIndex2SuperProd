@@ -150,7 +150,7 @@ public sealed class Outbox
                     var result = await sp.CreateTaskAsync(item.Task, CancellationToken.None);
                     TryDelete(file);
                     _log.Info($"Delivered queued task{(result.TaskId is null ? "" : $" {result.TaskId}")}: " +
-                              $"\"{item.Task.Title}\" (attempt {item.Attempts + 1})");
+                              $"\"{item.Task.Title}\" (attempt {item.Attempts + 1}{(result.ViaSuperSync ? ", via SuperSync" : "")})");
                     ItemDelivered?.Invoke(item.Task.Title, result.TaskId);
                 }
                 catch (SpApiException ex) when (ex.Permanent)

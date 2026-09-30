@@ -19,7 +19,13 @@
     "captureTagId": "",
     "captureTagName": "voice-note",
     "shoppingProjectId": "",
-    "taskDurationMinutes": 0
+    "taskDurationMinutes": 0,
+    "superSync": {
+      "enabled": false,
+      "baseUrl": "https://sync.super-productivity.com",
+      "accessToken": "paste-token-from-the-SuperSync-server-login-page",
+      "encryptionPassword": "same-encryption-password-as-in-SP-sync-settings"
+    }
   },
   "aiClassifier": {
     "enabled": false,

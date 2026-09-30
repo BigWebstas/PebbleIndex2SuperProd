@@ -474,6 +474,27 @@ public sealed class AppConfig
         /// (the tag must already exist in Super Productivity — the REST API cannot create tags).
         /// Ignored when CaptureTagId is set.</summary>
         public string CaptureTagName { get; set; } = "";
+
+        /// <summary>Optional fallback: when the Local REST API can't be reached (Super Productivity
+        /// not running), create the task by uploading it straight to a SuperSync server instead.</summary>
+        public SuperSyncConfig SuperSync { get; set; } = new();
+    }
+
+    public sealed class SuperSyncConfig
+    {
+        /// <summary>Use SuperSync when the Local REST API is unreachable. Off by default.</summary>
+        public bool Enabled { get; set; } = false;
+
+        /// <summary>SuperSync server URL — the hosted one, or your self-hosted server.</summary>
+        public string BaseUrl { get; set; } = "https://sync.super-productivity.com";
+
+        /// <summary>Access token from the SuperSync server's web page after logging in (the same one
+        /// Super Productivity's Settings → Sync → SuperSync uses).</summary>
+        public string AccessToken { get; set; } = "";
+
+        /// <summary>Your SuperSync encryption password, exactly as set in Super Productivity. Every
+        /// op is end-to-end encrypted with it; a wrong one produces tasks SP can't read.</summary>
+        public string EncryptionPassword { get; set; } = "";
     }
 
     // ---- persistence -------------------------------------------------------
@@ -867,6 +888,12 @@ public sealed class AppConfig
         SuperProductivity.BaseUrl = SuperProductivity.BaseUrl.TrimEnd('/');
         SuperProductivity.TagIds ??= new List<string>();
         SuperProductivity.TaskDurationMinutes = Math.Clamp(SuperProductivity.TaskDurationMinutes, 0, 1440);
+        SuperProductivity.SuperSync ??= new SuperSyncConfig();
+        if (string.IsNullOrWhiteSpace(SuperProductivity.SuperSync.BaseUrl))
+            SuperProductivity.SuperSync.BaseUrl = "https://sync.super-productivity.com";
+        SuperProductivity.SuperSync.BaseUrl = SuperProductivity.SuperSync.BaseUrl.Trim().TrimEnd('/');
+        SuperProductivity.SuperSync.AccessToken = SuperProductivity.SuperSync.AccessToken?.Trim() ?? "";
+        SuperProductivity.SuperSync.EncryptionPassword ??= "";
     }
 
     public static (string Host, int Port) ParseEndpoint(string? endpoint, int defaultPort = 9000)

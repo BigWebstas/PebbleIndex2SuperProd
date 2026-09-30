@@ -7,6 +7,8 @@ namespace Index2SP;
 /// <summary>
 /// Thin client for the Super Productivity desktop Local REST API
 /// (http://127.0.0.1:3876 by default). Docs: super-productivity/docs/wiki/3.01-API.md
+/// When superSync is configured, task creation falls back to <see cref="SuperSyncClient"/>
+/// whenever the Local REST API can't be reached.
 /// </summary>
 public sealed class SuperProductivityClient : IDisposable
 {
@@ -28,11 +30,35 @@ public sealed class SuperProductivityClient : IDisposable
                 new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.AccessToken);
     }
 
-    public sealed record CreateResult(string? TaskId, string RawData);
+    public sealed record CreateResult(string? TaskId, string RawData, bool ViaSuperSync = false);
 
     public async Task<CreateResult> CreateTaskAsync(SpTaskRequest request, CancellationToken ct = default)
     {
-        using var resp = await _http.PostAsJsonAsync("tasks", request, JsonOpts, ct);
+        HttpResponseMessage resp;
+        try
+        {
+            resp = await _http.PostAsJsonAsync("tasks", request, JsonOpts, ct);
+        }
+        // Only a failed connection falls back. A timeout could mean SP got the task and was
+        // slow to answer, and SuperSync would then create it a second time.
+        // Built per fallback, not cached: the tray edits superSync settings in place.
+        catch (HttpRequestException localEx) when (SuperSyncClient.IsConfigured(_config.SuperSync))
+        {
+            try
+            {
+                using var superSync = new SuperSyncClient(_config.SuperSync);
+                return await superSync.CreateTaskAsync(request, ct);
+            }
+            catch (Exception syncEx)
+            {
+                // Whatever went wrong (network, bad response, state file), never permanent:
+                // the task still gets queued and retried.
+                throw new SpApiException($"Super Productivity unreachable ({localEx.Message}) and the " +
+                                         $"SuperSync fallback failed: {syncEx.Message}");
+            }
+        }
+
+        using var _ = resp;
         var body = await resp.Content.ReadAsStringAsync(ct);
 
         if (resp.StatusCode == HttpStatusCode.Unauthorized)

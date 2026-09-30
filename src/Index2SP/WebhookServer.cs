@@ -343,7 +343,8 @@ public sealed class WebhookServer : IAsyncDisposable
         try
         {
             var result = await sp.CreateTaskAsync(task, CancellationToken.None);
-            _log.Info($"Created Super Productivity task{(result.TaskId is null ? "" : $" {result.TaskId}")}: \"{task.Title}\"");
+            _log.Info($"Created Super Productivity task{(result.TaskId is null ? "" : $" {result.TaskId}")}" +
+                      $"{(result.ViaSuperSync ? " via SuperSync" : "")}: \"{task.Title}\"");
             TaskCreated?.Invoke(task.Title, result.TaskId);
             return new TaskOutcome(task.Title, result.TaskId, false, null);
         }

@@ -475,7 +475,92 @@ public sealed class TrayController : IDisposable
 
         m.Add(new NativeMenuItem("Default project") { Menu = BuildProjectSubmenu() });
         m.Add(new NativeMenuItem("Default tags") { Menu = BuildTagsSubmenu() });
+        m.Add(new NativeMenuItemSeparator());
+        m.Add(new NativeMenuItem(FeatureTitle("SuperSync fallback", _config.SuperProductivity.SuperSync.Enabled))
+            { Menu = BuildSuperSyncSubmenu() });
         return m;
+    }
+
+    private NativeMenu BuildSuperSyncSubmenu()
+    {
+        var m = new NativeMenu();
+        var cfg = _config.SuperProductivity.SuperSync;
+
+        var enabled = new NativeMenuItem("Enabled")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = cfg.Enabled,
+        };
+        enabled.Click += (_, _) =>
+        {
+            cfg.Enabled = !cfg.Enabled;
+            SaveConfig($"SuperSync fallback {(cfg.Enabled ? "enabled" : "disabled")}");
+        };
+        m.Add(enabled);
+
+        m.Add(Action($"Server URL… ({cfg.BaseUrl})", () => _ = SetSuperSyncUrlAsync()));
+        m.Add(Action(string.IsNullOrWhiteSpace(cfg.AccessToken) ? "Set access token…" : "Change access token…",
+            () => _ = SetSuperSyncTokenAsync()));
+        m.Add(Action(string.IsNullOrEmpty(cfg.EncryptionPassword) ? "Set encryption password…" : "Change encryption password…",
+            () => _ = SetSuperSyncPasswordAsync()));
+        m.Add(Action("Test connection", () => _ = RunSuperSyncTestAsync()));
+        m.Add(Disabled("Used only when Super Productivity's Local REST API can't be reached"));
+        return m;
+    }
+
+    private async Task SetSuperSyncUrlAsync()
+    {
+        var value = await InputDialog.ShowAsync("SuperSync server URL",
+            "The hosted server is https://sync.super-productivity.com — or enter your self-hosted one.\n" +
+            "Leave blank to keep the current one.", masked: false);
+        if (value is null || value.Trim().Length == 0) return;
+
+        _config.SuperProductivity.SuperSync.BaseUrl = value.Trim().TrimEnd('/');
+        SaveConfig("SuperSync server URL updated");
+    }
+
+    private async Task SetSuperSyncTokenAsync()
+    {
+        var value = await InputDialog.ShowAsync("SuperSync access token",
+            "Log in on your SuperSync server's web page and paste the access token it shows\n" +
+            "(the same token Super Productivity's sync settings use). Leave blank to keep the current one.");
+        if (value is null || value.Trim().Length == 0) return;
+
+        _config.SuperProductivity.SuperSync.AccessToken = value.Trim();
+        SaveConfig("SuperSync access token updated");
+    }
+
+    private async Task SetSuperSyncPasswordAsync()
+    {
+        var value = await InputDialog.ShowAsync("SuperSync encryption password",
+            "Exactly the encryption password set in Super Productivity's sync settings.\n" +
+            "Leave blank to keep the current one.");
+        if (string.IsNullOrEmpty(value)) return;
+
+        _config.SuperProductivity.SuperSync.EncryptionPassword = value;
+        SaveConfig("SuperSync encryption password updated");
+    }
+
+    private async Task RunSuperSyncTestAsync()
+    {
+        var cfg = _config.SuperProductivity.SuperSync;
+        if (string.IsNullOrWhiteSpace(cfg.AccessToken) || string.IsNullOrEmpty(cfg.EncryptionPassword))
+        {
+            Notify("SuperSync", "Set an access token and encryption password first.", NotifyKind.Warning, force: true);
+            return;
+        }
+        try
+        {
+            using var client = new SuperSyncClient(cfg);
+            var message = await client.TestAsync();
+            _log.Info($"SuperSync test: {message}");
+            Notify("SuperSync", message, NotifyKind.Info, force: true);
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"SuperSync test failed: {ex.Message}");
+            Notify("SuperSync — test failed", ex.Message, NotifyKind.Error, force: true);
+        }
     }
 
     private NativeMenu BuildAiClassifierSubmenu()
@@ -1303,7 +1388,10 @@ public sealed class TrayController : IDisposable
             if (!manual && outage)
             {
                 Notify("Super Productivity unreachable", message, NotifyKind.Warning);
-                _ = CreateOutageTaskAsync("Super Productivity", message);
+                // Without SuperSync this attempt just fails (SP is the thing that's down); with it,
+                // it would file a task every time SP is simply closed.
+                if (!SuperSyncClient.IsConfigured(_config.SuperProductivity.SuperSync))
+                    _ = CreateOutageTaskAsync("Super Productivity", message);
             }
 
             if (manual)

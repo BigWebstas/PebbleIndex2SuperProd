@@ -55,6 +55,15 @@ Super Productivity, AI classifier, Joplin, Google Calendar, Beeper, Telegram, Wh
 own tray submenu: enable, credentials, and **Test connection** (or **Test all connections** for
 one combined check). Full field reference: [`config.example.json`](config.example.json).
 
+**Super Productivity → SuperSync fallback** creates the task straight on your
+[SuperSync](https://sync.super-productivity.com) server (hosted or self-hosted) whenever the Local
+REST API can't be reached — SP closed, laptop asleep — so captures still land and sync to every
+device instead of waiting in the outbox. Set the server URL, the access token shown on the
+server's page after you log in, and the same encryption password SP's sync settings use (every op
+is end-to-end encrypted with it); **Test connection** checks both. The local API stays the
+primary path. Fallback tasks with no project go to SP's Inbox rather than your configured default
+project, and project/tag lists for the AI classifier still come from the local API.
+
 **AI classifier → Provider** picks the backend: Claude, Gemini, OpenAI, or a local Ollama server.
 Each has its own credential/model submenu; only the selected provider's needs to be filled in.
 Claude and Gemini's model pickers pull your account's real available models once a key is set
