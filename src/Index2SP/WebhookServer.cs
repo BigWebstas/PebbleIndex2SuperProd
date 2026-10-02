@@ -22,6 +22,7 @@ public sealed class WebhookServer : IAsyncDisposable
     private readonly CaptureTagResolver _captureTag;
     private readonly Outbox _outbox;
     private readonly AiTaskClassifier _classifier;
+    private readonly DuplicateMessageTracker _seenMessages = new();
     private readonly string _webhookPath;
     private readonly string _healthPath;
     private WebApplication? _app;
@@ -160,6 +161,7 @@ public sealed class WebhookServer : IAsyncDisposable
 
         PebblePayload payload;
         IFormFile? audioFile = null;
+        string? messageId = null;
         try
         {
             var form = await ctx.Request.ReadFormAsync();
@@ -167,6 +169,7 @@ public sealed class WebhookServer : IAsyncDisposable
             long? recordedAt = null;
             if (long.TryParse(form["recordedAt"].ToString(), out var ms)) recordedAt = ms;
 
+            messageId = form["id"].ToString().Trim();
             audioFile = form.Files["audio"];
             long? audioSize = null;
             if (long.TryParse(ctx.Request.Headers["X-Audio-Size"].ToString(), out var hdrSize)) audioSize = hdrSize;
@@ -189,6 +192,36 @@ public sealed class WebhookServer : IAsyncDisposable
                 statusCode: StatusCodes.Status400BadRequest);
         }
 
+        if (string.IsNullOrEmpty(messageId))
+            return await ProcessPayloadAsync(ctx, remote, payload, audioFile);
+
+        switch (_seenMessages.TryClaim(messageId))
+        {
+            case DuplicateMessageTracker.Claim.InProgress:
+                _log.Info($"Duplicate webhook from {remote} for message id '{messageId}' — already processing");
+                return Results.Json(new { ok = false, error = new { message = "already processing", id = messageId } },
+                    statusCode: StatusCodes.Status409Conflict);
+            case DuplicateMessageTracker.Claim.AlreadyProcessed:
+                _log.Info($"Duplicate webhook from {remote} for message id '{messageId}' — already processed, ignoring");
+                return Results.Json(new { ok = true, data = new { duplicate = true, id = messageId, message = "already processed" } });
+        }
+
+        var succeeded = false;
+        try
+        {
+            var result = await ProcessPayloadAsync(ctx, remote, payload, audioFile);
+            succeeded = result is not IStatusCodeHttpResult { StatusCode: >= 400 };
+            return result;
+        }
+        finally
+        {
+            // A failed attempt releases the id so the sender's retry is processed normally.
+            _seenMessages.Complete(messageId, succeeded);
+        }
+    }
+
+    private async Task<IResult> ProcessPayloadAsync(HttpContext ctx, string remote, PebblePayload payload, IFormFile? audioFile)
+    {
         // Pebble normally transcribes on-device; this only fires for a genuinely audio-only
         // webhook, and never overrides a transcription Pebble already sent.
         if (string.IsNullOrWhiteSpace(payload.Transcription) && audioFile is not null && _config.WhisperAsr.Enabled)

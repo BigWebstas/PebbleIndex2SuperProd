@@ -156,6 +156,10 @@ CI builds every push/PR; pushing a `v*` tag cuts a [GitHub Release](https://gith
 ## Limitations
 
 - Audio-only webhooks are rejected (422) — no text, no task — unless speech recognition (Parakeet or Whisper) is enabled and transcribes usable text.
+- Duplicate webhooks are caught only when the sender includes an `id` form field. A repeat of an
+  id still processing gets `409 already processing`; a repeat of one already handled gets `200`
+  with `duplicate: true` and is ignored. Failed attempts release the id so retries go through.
+  Ids are remembered in memory for 24 hours (not across restarts).
 - No recurring tasks or subtasks (the SP REST API doesn't support them).
 - Outbox retries check for an exact title+notes match before recreating a task, which covers a
   lost reply after Super Productivity actually created it — but not two genuinely separate
