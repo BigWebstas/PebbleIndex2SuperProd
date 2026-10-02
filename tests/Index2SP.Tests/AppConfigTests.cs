@@ -9,7 +9,72 @@ public class AppConfigTests : IDisposable
     private readonly string _dir = Directory.CreateTempSubdirectory("index2sp-tests-").FullName;
     private string ConfigPath => Path.Combine(_dir, "config.json");
 
+    public AppConfigTests() => SecretProtector.KeyPath = Path.Combine(_dir, "secret.key");
+
     public void Dispose() => Directory.Delete(_dir, recursive: true);
+
+    [Fact]
+    public void Save_EncryptsSecretsOnDisk_AndLoadDecryptsThem()
+    {
+        var original = AppConfig.LoadOrCreate(ConfigPath);
+        original.Telegram.BotToken = "123:ABC";
+        original.SuperProductivity.AccessToken = "sp-token";
+        original.Save(ConfigPath);
+
+        var raw = File.ReadAllText(ConfigPath);
+        Assert.DoesNotContain("123:ABC", raw);
+        Assert.DoesNotContain("sp-token", raw);
+        Assert.Contains(SecretProtector.Prefix, raw);
+        Assert.Contains("\"inboundAuthToken\": \"\"", raw); // blanks stay blank
+
+        var reloaded = AppConfig.LoadOrCreate(ConfigPath);
+        Assert.Equal("123:ABC", reloaded.Telegram.BotToken);
+        Assert.Equal("sp-token", reloaded.SuperProductivity.AccessToken);
+        Assert.Equal(0, reloaded.UndecryptableSecrets);
+    }
+
+    [Fact]
+    public void LoadOrCreate_EncryptsPlaintextSecretsTypedIntoTheFile()
+    {
+        File.WriteAllText(ConfigPath, """
+        {
+          // hand-edited
+          "hmacSecret": "hmac-plain",
+          "aiClassifier": { "apiKey": "sk-plain", "model": "custom-model" },
+          "extraSetting": 1
+        }
+        """);
+
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.Equal("hmac-plain", config.HmacSecret);
+        Assert.Equal("sk-plain", config.AiClassifier.ApiKey);
+        var raw = File.ReadAllText(ConfigPath);
+        Assert.DoesNotContain("hmac-plain", raw);
+        Assert.DoesNotContain("sk-plain", raw);
+        Assert.Contains("custom-model", raw);
+        Assert.Contains("extraSetting", raw);
+
+        // Already encrypted -> no further rewrite.
+        Assert.False(AppConfig.PopulateMissingDefaults(ConfigPath));
+    }
+
+    [Fact]
+    public void LoadOrCreate_MissingKey_KeepsCiphertextAndReportsIt()
+    {
+        var original = AppConfig.LoadOrCreate(ConfigPath);
+        original.Beeper.ApiToken = "beeper-token";
+        original.Save(ConfigPath);
+        var encrypted = JsonNode.Parse(File.ReadAllText(ConfigPath))!["beeper"]!["apiToken"]!.GetValue<string>();
+
+        SecretProtector.KeyPath = Path.Combine(_dir, "missing", "secret.key");
+        var reloaded = AppConfig.LoadOrCreate(ConfigPath);
+        reloaded.Save(ConfigPath);
+
+        Assert.Equal(1, reloaded.UndecryptableSecrets);
+        Assert.Equal(encrypted, JsonNode.Parse(File.ReadAllText(ConfigPath))!["beeper"]!["apiToken"]!.GetValue<string>());
+        Assert.False(File.Exists(SecretProtector.KeyPath));
+    }
 
     [Fact]
     public void LoadOrCreate_WritesDefaultsWhenFileMissing()
@@ -381,7 +446,8 @@ public class AppConfigTests : IDisposable
 
         Assert.True(whisperObj["enabled"]?.GetValue<bool>());
         Assert.Equal("http://192.168.1.140:5092", whisperObj["baseUrl"]?.GetValue<string>());
-        Assert.Equal("AIzaSyALBXU0p", whisperObj["apiKey"]?.GetValue<string>());
+        Assert.Equal("AIzaSyALBXU0p", SecretProtector.Unprotect(whisperObj["apiKey"]!.GetValue<string>()));
+        Assert.StartsWith(SecretProtector.Prefix, whisperObj["apiKey"]!.GetValue<string>());
         Assert.Equal("remote", whisperObj["mode"]?.GetValue<string>());
         Assert.Equal("auto", whisperObj["format"]?.GetValue<string>());
         Assert.Equal("base.en", whisperObj["model"]?.GetValue<string>());

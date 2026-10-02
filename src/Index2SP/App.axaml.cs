@@ -33,6 +33,8 @@ public partial class App : Application
             try
             {
                 config = AppConfig.LoadOrCreate(AppConfig.DefaultPath);
+                if (config.UndecryptableSecrets > 0)
+                    log.Warn($"{config.UndecryptableSecrets} secret(s) in config.json couldn't be decrypted — secret.key beside it is missing or was replaced. Restore it, or re-enter those tokens/keys.");
             }
             catch (Exception ex)
             {

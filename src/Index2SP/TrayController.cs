@@ -1311,6 +1311,8 @@ public sealed class TrayController : IDisposable
         {
             _config = AppConfig.LoadOrCreate(_configPath);
             _log.Info("Config reloaded");
+            if (_config.UndecryptableSecrets > 0)
+                _log.Warn($"{_config.UndecryptableSecrets} secret(s) in config.json couldn't be decrypted — secret.key beside it is missing or was replaced. Restore it, or re-enter those tokens/keys.");
             _healthSpClient?.Dispose();
             _healthSpClient = null;
             _spHealth = SpHealth.Unknown;

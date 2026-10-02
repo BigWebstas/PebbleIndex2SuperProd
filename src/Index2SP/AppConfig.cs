@@ -24,6 +24,7 @@ public sealed class AppConfig
     /// "Authorization: Bearer &lt;token&gt;" (configure it as a custom header in the Pebble webhook settings).
     /// A bare token without the "Bearer " prefix is also accepted.
     /// </summary>
+    [JsonConverter(typeof(SecretJsonConverter))]
     public string InboundAuthToken { get; set; } = "";
 
     /// <summary>
@@ -31,6 +32,7 @@ public sealed class AppConfig
     /// signature matching the request body in X-Signature-SHA256, X-Hub-Signature-256, or X-Signature header.
     /// If blank, HMAC signature checking is disabled.
     /// </summary>
+    [JsonConverter(typeof(SecretJsonConverter))]
     public string HmacSecret { get; set; } = "";
 
     /// <summary>Super Productivity title cap (the API rejects titles &gt; 300 chars after trim).</summary>
@@ -169,6 +171,7 @@ public sealed class AppConfig
         public bool Enabled { get; set; } = false;
 
         /// <summary>Bot token from @BotFather, e.g. "123456789:AAF...".</summary>
+        [JsonConverter(typeof(SecretJsonConverter))]
         public string BotToken { get; set; } = "";
 
         /// <summary>Seconds to wait for Telegram before giving up. Clamped 2–30.</summary>
@@ -235,6 +238,7 @@ public sealed class AppConfig
         /// <summary>
         /// Optional API key or bearer token if the remote ASR service requires authentication.
         /// </summary>
+        [JsonConverter(typeof(SecretJsonConverter))]
         public string ApiKey { get; set; } = "";
 
         /// <summary>Spoken language code (e.g. "en", "es", "de") to request. Blank uses auto-detection.</summary>
@@ -299,6 +303,7 @@ public sealed class AppConfig
 
         /// <summary>Personal access token created in Beeper Desktop's API/developer settings.
         /// Needs read + write scope (search chats, send messages).</summary>
+        [JsonConverter(typeof(SecretJsonConverter))]
         public string ApiToken { get; set; } = "";
 
         /// <summary>Seconds to wait for Beeper before giving up. Clamped 2–30.</summary>
@@ -321,9 +326,11 @@ public sealed class AppConfig
         public string ClientId { get; set; } = "";
 
         /// <summary>OAuth client secret from the same credential.</summary>
+        [JsonConverter(typeof(SecretJsonConverter))]
         public string ClientSecret { get; set; } = "";
 
         /// <summary>Refresh token from the tray's Connect flow. Blank = not connected.</summary>
+        [JsonConverter(typeof(SecretJsonConverter))]
         public string RefreshToken { get; set; } = "";
 
         /// <summary>Calendar to create events on. "primary" = the account's main calendar.</summary>
@@ -348,6 +355,7 @@ public sealed class AppConfig
         public string BaseUrl { get; set; } = "http://127.0.0.1:41184";
 
         /// <summary>Authorisation token from the same Web Clipper settings page.</summary>
+        [JsonConverter(typeof(SecretJsonConverter))]
         public string AuthToken { get; set; } = "";
 
         /// <summary>Notebook (folder) id to file notes under. Blank = Joplin's default
@@ -386,6 +394,7 @@ public sealed class AppConfig
         public string FallbackProvider { get; set; } = "";
 
         /// <summary>Anthropic API key. Get one at https://console.anthropic.com/ .</summary>
+        [JsonConverter(typeof(SecretJsonConverter))]
         public string ApiKey { get; set; } = "";
 
         /// <summary>Claude model id. The default is fast and cheap — plenty for picking a
@@ -393,12 +402,14 @@ public sealed class AppConfig
         public string Model { get; set; } = "claude-haiku-4-5";
 
         /// <summary>Google AI Studio API key. Get one at https://aistudio.google.com/apikey .</summary>
+        [JsonConverter(typeof(SecretJsonConverter))]
         public string GeminiApiKey { get; set; } = "";
 
         /// <summary>Gemini model id.</summary>
         public string GeminiModel { get; set; } = "gemini-2.5-flash";
 
         /// <summary>OpenAI API key. Get one at https://platform.openai.com/api-keys .</summary>
+        [JsonConverter(typeof(SecretJsonConverter))]
         public string OpenAiApiKey { get; set; } = "";
 
         /// <summary>OpenAI model id.</summary>
@@ -446,6 +457,7 @@ public sealed class AppConfig
 
         /// <summary>Access token from Super Productivity: Settings → Misc → Local REST API.
         /// Sent as "Authorization: Bearer &lt;token&gt;". Leave blank if your build does not require it.</summary>
+        [JsonConverter(typeof(SecretJsonConverter))]
         public string AccessToken { get; set; } = "";
 
         /// <summary>Optional project to file every created task under (must be an existing active project id).
@@ -490,10 +502,12 @@ public sealed class AppConfig
 
         /// <summary>Access token from the SuperSync server's web page after logging in (the same one
         /// Super Productivity's Settings → Sync → SuperSync uses).</summary>
+        [JsonConverter(typeof(SecretJsonConverter))]
         public string AccessToken { get; set; } = "";
 
         /// <summary>Your SuperSync encryption password, exactly as set in Super Productivity. Every
         /// op is end-to-end encrypted with it; a wrong one produces tasks SP can't read.</summary>
+        [JsonConverter(typeof(SecretJsonConverter))]
         public string EncryptionPassword { get; set; } = "";
     }
 
@@ -528,12 +542,22 @@ public sealed class AppConfig
         }
 
         var json = File.ReadAllText(path);
+        SecretProtector.ResetFailures();
         var cfg = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions)
                   ?? throw new InvalidDataException("config.json deserialized to null");
+        cfg.UndecryptableSecrets = SecretProtector.Failures;
         cfg.Normalize();
+        // Also encrypts any secret still in plain text on disk (typed in by hand, or from a
+        // version before encryption existed).
         PopulateMissingDefaults(path, cfg);
         return cfg;
     }
+
+    /// <summary>How many encrypted secrets in config.json couldn't be decrypted on load (secret.key
+    /// missing or replaced). They're kept as-is on disk; the affected integrations won't
+    /// authenticate until secret.key is restored or the values are re-entered.</summary>
+    [JsonIgnore]
+    public int UndecryptableSecrets { get; private set; }
 
     /// <summary>
     /// Inspects the configuration file on disk, merges any schema defaults that are not already
@@ -673,6 +697,12 @@ public sealed class AppConfig
                         result[schemaKey] = schemaVal.DeepClone();
                         modified = true;
                     }
+                    else if (IsPlaintextSecret(targetVal, schemaVal))
+                    {
+                        // A secret still in plain text on disk — replace it with its encrypted form.
+                        result[schemaKey] = schemaVal!.DeepClone();
+                        modified = true;
+                    }
                     else
                     {
                         result[schemaKey] = targetVal?.DeepClone();
@@ -711,6 +741,10 @@ public sealed class AppConfig
 
         return result;
     }
+
+    private static bool IsPlaintextSecret(JsonNode? targetVal, JsonNode? schemaVal) =>
+        schemaVal is JsonValue sv && sv.TryGetValue<string>(out var encrypted) && SecretProtector.IsProtected(encrypted)
+        && targetVal is JsonValue tv && tv.TryGetValue<string>(out var onDisk) && !SecretProtector.IsProtected(onDisk);
 
     private static bool IsObsoleteAlias(string key, string? parentKey)
     {

@@ -64,6 +64,11 @@ is end-to-end encrypted with it); **Test connection** checks both. The local API
 primary path. Fallback tasks with no project go to SP's Inbox rather than your configured default
 project, and project/tag lists for the AI classifier still come from the local API.
 
+Tokens, API keys, and secrets are stored encrypted (`enc:v1:…`) with a key in `secret.key` next
+to `config.json`. You can paste a plain value into `config.json` by hand — it's encrypted on the
+next launch or **Reload config**. Back up `secret.key` with `config.json`; without it the
+encrypted values can't be read and have to be re-entered.
+
 **AI classifier → Provider** picks the backend: Claude, Gemini, OpenAI, or a local Ollama server.
 Each has its own credential/model submenu; only the selected provider's needs to be filled in.
 Claude and Gemini's model pickers pull your account's real available models once a key is set
