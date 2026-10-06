@@ -606,7 +606,8 @@ public sealed class WebhookServer : IAsyncDisposable
     /// Best-effort Telegram delivery — used only for web-search summaries and webhook receipts,
     /// each to its own configured chat id. The general "send a message to X" feature stays on
     /// Beeper (see <see cref="SendBeeperMessageAsync"/>), which is where recipient search across
-    /// whatever chats already exist actually matters.
+    /// whatever chats already exist actually matters. Also reports a Beeper recipient that has no
+    /// chat, to the webhook receipt chat.
     /// </summary>
     private async Task<bool> SendTelegramMessageAsync(string chatId, string text)
     {
@@ -647,6 +648,7 @@ public sealed class WebhookServer : IAsyncDisposable
             if (matches.Count == 0)
             {
                 _log.Warn($"Beeper message skipped: no chat found matching \"{recipient}\"");
+                await SendTelegramMessageAsync(_config.WebhookReceipt.ChatId, $"No chat found: {recipient}");
                 return false;
             }
 
