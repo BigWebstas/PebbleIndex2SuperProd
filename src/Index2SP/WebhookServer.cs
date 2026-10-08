@@ -306,7 +306,14 @@ public sealed class WebhookServer : IAsyncDisposable
             routing = await ApplyAiClassificationAsync(sp, taskReq, payload.Transcription, payload.RecordedAt);
         var shoppingItems = routing.ShoppingItems;
 
-        await SendWebhookReceiptAsync(routing.CaptureKind);
+        // A non-null kind means Joplin/Calendar/Beeper/web search already succeeded. Otherwise the
+        // receipt waits until the Super Productivity task(s) are confirmed created below.
+        var receiptSent = false;
+        if (routing.CaptureKind is not null)
+        {
+            await SendWebhookReceiptAsync(routing.CaptureKind);
+            receiptSent = true;
+        }
 
         if (shoppingItems is null && routing.SkipSuperProductivityTask)
         {
@@ -324,6 +331,8 @@ public sealed class WebhookServer : IAsyncDisposable
                 outcomes.Add(await CreateOrQueueTaskAsync(sp, ForShoppingItem(taskReq, item, _config.TitleMaxLength, routing.ShoppingMerchant)));
 
             var anyPermanentFailure = outcomes.Any(o => o.Error is not null);
+            if (!receiptSent && outcomes.All(o => !o.Queued && o.Error is null))
+                await SendWebhookReceiptAsync("Shopping List Updated");
             return Results.Json(new
             {
                 ok = !anyPermanentFailure,
@@ -341,6 +350,8 @@ public sealed class WebhookServer : IAsyncDisposable
         if (outcome.Queued)
             return Results.Json(new { ok = true, data = new { queued = true, title = outcome.Title } },
                 statusCode: StatusCodes.Status202Accepted);
+        if (!receiptSent)
+            await SendWebhookReceiptAsync("Task Created");
         return Results.Json(new { ok = true, data = new { taskId = outcome.TaskId, title = outcome.Title } });
     }
 
@@ -350,20 +361,8 @@ public sealed class WebhookServer : IAsyncDisposable
     /// (null when this isn't a multi-item shopping capture), and whether the main Super
     /// Productivity task should be skipped because <see cref="AppConfig.AiClassifierConfig.ExclusiveRouting"/>
     /// is on and the transcription was successfully routed to Joplin/Calendar/Beeper instead.</summary>
-    private sealed record AiRoutingResult(List<string>? ShoppingItems, bool SkipSuperProductivityTask, string CaptureKind = "Task Created",
+    private sealed record AiRoutingResult(List<string>? ShoppingItems, bool SkipSuperProductivityTask, string? CaptureKind = null,
         string? ShoppingMerchant = null);
-
-    /// <summary>Short, human phrase for the webhook-receipt notification — priority order matters
-    /// when more than one flag is set (e.g. a note that's also date-stamped).</summary>
-    private static string DescribeCaptureKind(AiTaskClassifier.Classification result) => result switch
-    {
-        { IsWebSearch: true } => "Web Search Sent",
-        { IsMessage: true } => "Message Sent",
-        { IsCalendarEvent: true } => "Event Created",
-        { IsNote: true } => "Note Created",
-        { IsShopping: true } => "Shopping List Updated",
-        _ => "Task Created",
-    };
 
     /// <summary>
     /// Creates one task in Super Productivity, or queues it in the outbox on a transient
@@ -517,7 +516,14 @@ public sealed class WebhookServer : IAsyncDisposable
                 // Skip the Super Productivity task only when routing elsewhere actually worked —
                 // a failed/disabled destination still falls back to the normal SP task below.
                 var skip = _config.AiClassifier.ExclusiveRouting && (joplinSent || calendarCreated || messageSent || webSearchSent);
-                return new AiRoutingResult(null, skip, DescribeCaptureKind(result));
+                // Names only a destination that actually succeeded (priority matters when several
+                // fired); null leaves the receipt to the Super Productivity task fallback.
+                var captureKind = webSearchSent ? "Web Search Sent"
+                    : messageSent ? "Message Sent"
+                    : calendarCreated ? "Event Created"
+                    : joplinSent ? "Note Created"
+                    : null;
+                return new AiRoutingResult(null, skip, captureKind);
             }
 
             // A configured shopping project always wins over the classifier's own pick —
@@ -526,8 +532,8 @@ public sealed class WebhookServer : IAsyncDisposable
             if (!string.IsNullOrWhiteSpace(shoppingProjectId))
                 taskReq.ProjectId = shoppingProjectId.Trim();
 
-            return new AiRoutingResult(result.ShoppingItems.Count > 0 ? result.ShoppingItems : null, false, "Shopping List Updated",
-                result.ShoppingMerchant);
+            return new AiRoutingResult(result.ShoppingItems.Count > 0 ? result.ShoppingItems : null, false,
+                ShoppingMerchant: result.ShoppingMerchant);
         }
         catch (Exception ex) when (ex is SpApiException or HttpRequestException or TaskCanceledException)
         {
@@ -599,10 +605,9 @@ public sealed class WebhookServer : IAsyncDisposable
     }
 
     /// <summary>
-    /// Best-effort receipt for every webhook Index2SP handles — "Webhook Received, Note Created"
-    /// and so on, naming whatever the classifier (or its absence) decided. Fires regardless of
-    /// whether the underlying Super Productivity task or destination actually succeeds; this is
-    /// only ever "we got it and this is what we think it is," not a delivery confirmation.
+    /// Best-effort receipt — "Webhook Received, Note Created" and so on. Only sent once the named
+    /// destination (task, note, event, message, web search) actually succeeded, so it doubles as
+    /// a delivery confirmation; a task queued for retry or rejected sends nothing.
     /// </summary>
     private async Task SendWebhookReceiptAsync(string captureKind)
     {
