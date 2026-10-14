@@ -722,22 +722,26 @@ public sealed class WebhookServer : IAsyncDisposable
         }
     }
 
-    internal static readonly string[] HmacHeaderNames = new[]
-    {
-        "X-Signature-SHA256",
-        "X-Hub-Signature-256",
-        "X-Signature",
-        "X-Index-Signature"
-    };
+    internal const string SignatureHeader = "X-Index-Signature";
+    internal static readonly TimeSpan ReplayWindow = TimeSpan.FromMinutes(5);
 
-    internal static bool HasHmacSignatureHeader(IHeaderDictionary headers)
+    // Accepted delivery IDs -> expiry, so a captured signed request can't be replayed inside the window.
+    private readonly Dictionary<string, DateTimeOffset> _seenDeliveries = new();
+
+    internal static bool HasHmacSignatureHeader(IHeaderDictionary headers) =>
+        !string.IsNullOrEmpty(headers[SignatureHeader].ToString());
+
+    /// <summary>Records a delivery ID; returns false if it was already accepted within the window.</summary>
+    private bool TryRegisterDelivery(IHeaderDictionary headers)
     {
-        foreach (var headerName in HmacHeaderNames)
+        var id = headers["X-Index-Delivery"].ToString().Trim();
+        var now = DateTimeOffset.UtcNow;
+        lock (_seenDeliveries)
         {
-            if (!string.IsNullOrEmpty(headers[headerName].ToString()))
-                return true;
+            foreach (var key in _seenDeliveries.Where(kv => kv.Value <= now).Select(kv => kv.Key).ToList())
+                _seenDeliveries.Remove(key);
+            return _seenDeliveries.TryAdd(id, now + ReplayWindow + ReplayWindow); // timestamps are valid ±window
         }
-        return false;
     }
 
     internal bool IsAuthorized(HttpRequest request, byte[]? bodyBytes)
@@ -751,6 +755,8 @@ public sealed class WebhookServer : IAsyncDisposable
 
         var bodySpan = (ReadOnlySpan<byte>)(bodyBytes ?? Array.Empty<byte>());
 
+        var signed = false;
+
         // If HMAC secret is configured, require a valid HMAC-SHA256 signature
         if (!string.IsNullOrEmpty(expectedHmac))
         {
@@ -759,6 +765,7 @@ public sealed class WebhookServer : IAsyncDisposable
                 _log.Warn("Inbound webhook HMAC-SHA256 signature verification failed");
                 return false;
             }
+            signed = true;
         }
 
         // If InboundAuthToken is configured:
@@ -779,66 +786,58 @@ public sealed class WebhookServer : IAsyncDisposable
                 // allow InboundAuthToken to serve as the HMAC secret
                 if (string.IsNullOrEmpty(expectedHmac) && VerifyHmacSignature(request.Headers, bodySpan, expectedBearer))
                 {
-                    return true;
+                    return AcceptDelivery(request.Headers);
                 }
                 _log.Warn("Inbound webhook Bearer token verification failed");
                 return false;
             }
         }
 
-        return true;
+        return !signed || AcceptDelivery(request.Headers);
     }
 
-    internal static bool VerifyHmacSignature(IHeaderDictionary headers, byte[] bodyBytes, string secret) =>
-        VerifyHmacSignature(headers, (ReadOnlySpan<byte>)(bodyBytes ?? Array.Empty<byte>()), secret);
+    private bool AcceptDelivery(IHeaderDictionary headers)
+    {
+        if (TryRegisterDelivery(headers)) return true;
+        _log.Warn("Inbound webhook rejected: delivery ID already seen (replay)");
+        return false;
+    }
 
-    internal static bool VerifyHmacSignature(IHeaderDictionary headers, ReadOnlySpan<byte> bodyBytes, string secret)
+    /// <summary>
+    /// Verifies Pebble Index webhook v1 signing: HMAC-SHA256 (key = UTF-8 secret) over
+    /// "v1\n{timestamp}\n{delivery}\n{trigger}\n{isTest 1|0}\n" followed by the raw multipart body,
+    /// sent as lowercase hex in X-Index-Signature. Also rejects timestamps outside the replay window.
+    /// </summary>
+    internal static bool VerifyHmacSignature(IHeaderDictionary headers, ReadOnlySpan<byte> bodyBytes, string secret, DateTimeOffset? now = null)
     {
         if (string.IsNullOrWhiteSpace(secret)) return false;
 
-        string? signatureHeader = null;
-        foreach (var headerName in HmacHeaderNames)
-        {
-            var val = headers[headerName].ToString().Trim();
-            if (!string.IsNullOrEmpty(val))
-            {
-                signatureHeader = val;
-                break;
-            }
-        }
-
-        if (string.IsNullOrEmpty(signatureHeader))
-            return false;
-
-        var sigHex = signatureHeader.AsSpan();
-        if (sigHex.StartsWith("sha256=", StringComparison.OrdinalIgnoreCase))
-            sigHex = sigHex["sha256=".Length..].Trim();
-
-        if (sigHex.Length != 64)
-            return false;
+        var sigHex = headers[SignatureHeader].ToString().Trim();
+        if (sigHex.Length != 64) return false;
 
         byte[] receivedSig;
-        try
-        {
-            receivedSig = Convert.FromHexString(sigHex);
-        }
-        catch (FormatException)
-        {
-            return false;
-        }
+        try { receivedSig = Convert.FromHexString(sigHex); }
+        catch (FormatException) { return false; }
 
-        if (receivedSig.Length != 32)
-            return false;
+        var version = headers["X-Index-Webhook-Version"].ToString().Trim();
+        if (version != "1") return false;
 
-        Span<byte> expectedHash = stackalloc byte[32];
-        var trimmedSecret = secret.Trim();
-        int keyByteCount = Encoding.UTF8.GetByteCount(trimmedSecret);
-        Span<byte> keyBytes = keyByteCount <= 256 ? stackalloc byte[keyByteCount] : new byte[keyByteCount];
-        Encoding.UTF8.GetBytes(trimmedSecret, keyBytes);
+        var timestamp = headers["X-Index-Timestamp"].ToString().Trim();
+        if (!long.TryParse(timestamp, out var tsSeconds)) return false;
+        var skew = (now ?? DateTimeOffset.UtcNow) - DateTimeOffset.FromUnixTimeSeconds(tsSeconds);
+        if (skew.Duration() > ReplayWindow) return false;
 
-        HMACSHA256.HashData(keyBytes, bodyBytes, expectedHash);
+        var delivery = headers["X-Index-Delivery"].ToString().Trim();
+        if (delivery.Length == 0) return false;
 
-        return CryptographicOperations.FixedTimeEquals(receivedSig, expectedHash);
+        var trigger = headers["X-Index-Trigger"].ToString().Trim();
+        var isTest = headers["X-Index-Test"].ToString().Trim().Length > 0 ? "1" : "0";
+        var prefix = Encoding.UTF8.GetBytes($"v{version}\n{timestamp}\n{delivery}\n{trigger}\n{isTest}\n");
+
+        using var hmac = IncrementalHash.CreateHMAC(HashAlgorithmName.SHA256, Encoding.UTF8.GetBytes(secret));
+        hmac.AppendData(prefix);
+        hmac.AppendData(bodyBytes);
+        return CryptographicOperations.FixedTimeEquals(receivedSig, hmac.GetHashAndReset());
     }
 
     private static bool FixedTimeEquals(string a, string b)

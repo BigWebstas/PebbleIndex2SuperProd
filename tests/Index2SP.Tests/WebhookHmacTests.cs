@@ -18,140 +18,84 @@ public class WebhookHmacTests
         return Convert.ToHexString(ComputeHmacSha256(secret, body)).ToLowerInvariant();
     }
 
-    [Fact]
-    public void VerifyHmacSignature_ValidSha256Prefix_ReturnsTrue()
-    {
-        var secret = "super-secret-key-123";
-        var body = Encoding.UTF8.GetBytes("{\"test\":\"data\"}");
-        var hex = ComputeHmacSha256Hex(secret, body);
+    private static readonly DateTimeOffset Now = DateTimeOffset.FromUnixTimeSeconds(1_800_000_000);
 
+    private static HeaderDictionary SignedHeaders(string secret, byte[] body, long? timestamp = null,
+        string delivery = "d-1", string trigger = "single-click-hold", bool isTest = false, string version = "1")
+    {
+        var ts = (timestamp ?? Now.ToUnixTimeSeconds()).ToString();
+        var prefix = Encoding.UTF8.GetBytes($"v{version}\n{ts}\n{delivery}\n{trigger}\n{(isTest ? "1" : "0")}\n");
+        var sig = Convert.ToHexString(ComputeHmacSha256(secret, [.. prefix, .. body])).ToLowerInvariant();
         var headers = new HeaderDictionary
         {
-            ["X-Signature-SHA256"] = $"sha256={hex}"
+            ["X-Index-Webhook-Version"] = version,
+            ["X-Index-Timestamp"] = ts,
+            ["X-Index-Delivery"] = delivery,
+            ["X-Index-Trigger"] = trigger,
+            ["X-Index-Signature"] = sig
         };
-
-        var valid = WebhookServer.VerifyHmacSignature(headers, body, secret);
-        Assert.True(valid);
+        if (isTest) headers["X-Index-Test"] = "true";
+        return headers;
     }
 
     [Fact]
-    public void VerifyHmacSignature_ValidHubSignatureHeader_ReturnsTrue()
+    public void Verify_ValidSignature_ReturnsTrue()
     {
-        var secret = "hub-secret-xyz";
-        var body = Encoding.UTF8.GetBytes("sample webhook body bytes");
-        var hex = ComputeHmacSha256Hex(secret, body);
-
-        var headers = new HeaderDictionary
-        {
-            ["X-Hub-Signature-256"] = $"sha256={hex}"
-        };
-
-        var valid = WebhookServer.VerifyHmacSignature(headers, body, secret);
-        Assert.True(valid);
+        var body = Encoding.UTF8.GetBytes("multipart body");
+        Assert.True(WebhookServer.VerifyHmacSignature(SignedHeaders("s3cret", body), body, "s3cret", Now));
     }
 
     [Fact]
-    public void VerifyHmacSignature_BareHexWithoutPrefix_ReturnsTrue()
+    public void Verify_TestEvent_ReturnsTrue()
     {
-        var secret = "bare-secret-456";
-        var body = Encoding.UTF8.GetBytes("simple body");
-        var hex = ComputeHmacSha256Hex(secret, body);
-
-        var headers = new HeaderDictionary
-        {
-            ["X-Signature"] = hex
-        };
-
-        var valid = WebhookServer.VerifyHmacSignature(headers, body, secret);
-        Assert.True(valid);
+        var body = Encoding.UTF8.GetBytes("multipart body");
+        var headers = SignedHeaders("s3cret", body, trigger: "test-event", isTest: true);
+        Assert.True(WebhookServer.VerifyHmacSignature(headers, body, "s3cret", Now));
     }
 
     [Fact]
-    public void VerifyHmacSignature_CaseInsensitiveHex_ReturnsTrue()
+    public void Verify_TamperedBody_ReturnsFalse()
     {
-        var secret = "case-test";
-        var body = Encoding.UTF8.GetBytes("case sensitive data");
-        var hexUpper = ComputeHmacSha256Hex(secret, body).ToUpperInvariant();
-
-        var headers = new HeaderDictionary
-        {
-            ["X-Index-Signature"] = $"sha256={hexUpper}"
-        };
-
-        var valid = WebhookServer.VerifyHmacSignature(headers, body, secret);
-        Assert.True(valid);
+        var headers = SignedHeaders("s3cret", Encoding.UTF8.GetBytes("original"));
+        Assert.False(WebhookServer.VerifyHmacSignature(headers, Encoding.UTF8.GetBytes("tampered"), "s3cret", Now));
     }
 
     [Fact]
-    public void VerifyHmacSignature_TamperedBody_ReturnsFalse()
+    public void Verify_WrongSecretOrEmptySecret_ReturnsFalse()
     {
-        var secret = "tamper-proof";
-        var originalBody = Encoding.UTF8.GetBytes("legitimate content");
-        var tamperedBody = Encoding.UTF8.GetBytes("tampered content");
-        var hex = ComputeHmacSha256Hex(secret, originalBody);
-
-        var headers = new HeaderDictionary
-        {
-            ["X-Signature-SHA256"] = $"sha256={hex}"
-        };
-
-        var valid = WebhookServer.VerifyHmacSignature(headers, tamperedBody, secret);
-        Assert.False(valid);
+        var body = Encoding.UTF8.GetBytes("b");
+        var headers = SignedHeaders("s3cret", body);
+        Assert.False(WebhookServer.VerifyHmacSignature(headers, body, "other", Now));
+        Assert.False(WebhookServer.VerifyHmacSignature(headers, body, "", Now));
     }
 
     [Fact]
-    public void VerifyHmacSignature_WrongSecret_ReturnsFalse()
+    public void Verify_ChangedSignedHeader_ReturnsFalse()
     {
-        var realSecret = "real-key";
-        var attackerSecret = "attacker-key";
-        var body = Encoding.UTF8.GetBytes("some payload");
-        var hex = ComputeHmacSha256Hex(attackerSecret, body);
-
-        var headers = new HeaderDictionary
-        {
-            ["X-Signature-SHA256"] = $"sha256={hex}"
-        };
-
-        var valid = WebhookServer.VerifyHmacSignature(headers, body, realSecret);
-        Assert.False(valid);
+        var body = Encoding.UTF8.GetBytes("b");
+        var headers = SignedHeaders("s3cret", body);
+        headers["X-Index-Trigger"] = "double-click-hold";
+        Assert.False(WebhookServer.VerifyHmacSignature(headers, body, "s3cret", Now));
     }
 
     [Fact]
-    public void VerifyHmacSignature_MissingSignatureHeader_ReturnsFalse()
+    public void Verify_StaleOrMalformedTimestamp_ReturnsFalse()
     {
-        var secret = "secret-key";
-        var body = Encoding.UTF8.GetBytes("some payload");
-        var headers = new HeaderDictionary();
+        var body = Encoding.UTF8.GetBytes("b");
+        var stale = SignedHeaders("s3cret", body, timestamp: Now.ToUnixTimeSeconds() - 301);
+        Assert.False(WebhookServer.VerifyHmacSignature(stale, body, "s3cret", Now));
 
-        var valid = WebhookServer.VerifyHmacSignature(headers, body, secret);
-        Assert.False(valid);
+        var bad = SignedHeaders("s3cret", body);
+        bad["X-Index-Timestamp"] = "yesterday";
+        Assert.False(WebhookServer.VerifyHmacSignature(bad, body, "s3cret", Now));
     }
 
     [Fact]
-    public void VerifyHmacSignature_MalformedHex_ReturnsFalse()
+    public void Verify_UnsupportedVersionOrMissingSignature_ReturnsFalse()
     {
-        var secret = "secret-key";
-        var body = Encoding.UTF8.GetBytes("some payload");
-        var headers = new HeaderDictionary
-        {
-            ["X-Signature-SHA256"] = "sha256=not_a_valid_hex_string!!!"
-        };
-
-        var valid = WebhookServer.VerifyHmacSignature(headers, body, secret);
-        Assert.False(valid);
-    }
-
-    [Fact]
-    public void VerifyHmacSignature_EmptySecret_ReturnsFalse()
-    {
-        var body = Encoding.UTF8.GetBytes("some payload");
-        var headers = new HeaderDictionary
-        {
-            ["X-Signature-SHA256"] = "sha256=abcdef"
-        };
-
-        var valid = WebhookServer.VerifyHmacSignature(headers, body, "");
-        Assert.False(valid);
+        var body = Encoding.UTF8.GetBytes("b");
+        Assert.False(WebhookServer.VerifyHmacSignature(SignedHeaders("s3cret", body, version: "2"), body, "s3cret", Now));
+        Assert.False(WebhookServer.VerifyHmacSignature(new HeaderDictionary(), body, "s3cret", Now));
     }
 
     [Fact]
@@ -184,71 +128,57 @@ public class WebhookHmacTests
         }
     }
 
-    [Fact]
-    public void IsAuthorized_WithHmacSecret_AcceptsValidSignature()
+    private static HttpRequest SignedRequest(string secret, byte[] body, string delivery)
     {
-        var config = new AppConfig { HmacSecret = "test-secret" };
-        var server = new WebhookServer(config, new Logger(), null!, null!, null!);
-        var body = Encoding.UTF8.GetBytes("{\"memo\":\"buy milk\"}");
-        var hex = ComputeHmacSha256Hex("test-secret", body);
-
         var ctx = new DefaultHttpContext();
-        ctx.Request.Headers["X-Signature-SHA256"] = $"sha256={hex}";
+        foreach (var h in SignedHeaders(secret, body, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), delivery))
+            ctx.Request.Headers[h.Key] = h.Value;
+        return ctx.Request;
+    }
 
-        Assert.True(server.IsAuthorized(ctx.Request, body));
+    [Fact]
+    public void IsAuthorized_WithHmacSecret_AcceptsValidSignatureOnceThenRejectsReplay()
+    {
+        var server = new WebhookServer(new AppConfig { HmacSecret = "hmac-key" }, new Logger(), null!, null!, null!);
+        var body = Encoding.UTF8.GetBytes("payload");
+        Assert.True(server.IsAuthorized(SignedRequest("hmac-key", body, "d-1"), body));
+        Assert.False(server.IsAuthorized(SignedRequest("hmac-key", body, "d-1"), body));
+        Assert.True(server.IsAuthorized(SignedRequest("hmac-key", body, "d-2"), body));
     }
 
     [Fact]
     public void IsAuthorized_WithHmacSecret_RejectsMissingOrBadSignature()
     {
-        var config = new AppConfig { HmacSecret = "test-secret" };
-        var server = new WebhookServer(config, new Logger(), null!, null!, null!);
-        var body = Encoding.UTF8.GetBytes("{\"memo\":\"buy milk\"}");
-
-        var ctxMissing = new DefaultHttpContext();
-        Assert.False(server.IsAuthorized(ctxMissing.Request, body));
-
-        var ctxBad = new DefaultHttpContext();
-        ctxBad.Request.Headers["X-Signature-SHA256"] = "sha256=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
-        Assert.False(server.IsAuthorized(ctxBad.Request, body));
+        var server = new WebhookServer(new AppConfig { HmacSecret = "hmac-key" }, new Logger(), null!, null!, null!);
+        var body = Encoding.UTF8.GetBytes("payload");
+        Assert.False(server.IsAuthorized(new DefaultHttpContext().Request, body));
+        Assert.False(server.IsAuthorized(SignedRequest("wrong", body, "d-1"), body));
     }
 
     [Fact]
     public void IsAuthorized_WithInboundAuthTokenFallback_AcceptsHmacMatchingToken()
     {
-        var config = new AppConfig { InboundAuthToken = "token-as-hmac-key", HmacSecret = "" };
-        var server = new WebhookServer(config, new Logger(), null!, null!, null!);
-        var body = Encoding.UTF8.GetBytes("payload data");
-        var hex = ComputeHmacSha256Hex("token-as-hmac-key", body);
-
-        var ctx = new DefaultHttpContext();
-        ctx.Request.Headers["X-Hub-Signature-256"] = $"sha256={hex}";
-
-        Assert.True(server.IsAuthorized(ctx.Request, body));
+        var server = new WebhookServer(new AppConfig { InboundAuthToken = "token-as-key" }, new Logger(), null!, null!, null!);
+        var body = Encoding.UTF8.GetBytes("payload");
+        Assert.True(server.IsAuthorized(SignedRequest("token-as-key", body, "d-1"), body));
     }
 
     [Fact]
     public void IsAuthorized_WithBothConfigured_RequiresBothValid()
     {
-        var config = new AppConfig { InboundAuthToken = "bearer-token", HmacSecret = "hmac-key" };
-        var server = new WebhookServer(config, new Logger(), null!, null!, null!);
+        var server = new WebhookServer(new AppConfig { InboundAuthToken = "bearer-token", HmacSecret = "hmac-key" },
+            new Logger(), null!, null!, null!);
         var body = Encoding.UTF8.GetBytes("secure payload");
-        var hex = ComputeHmacSha256Hex("hmac-key", body);
 
-        // Missing bearer token
-        var ctxNoBearer = new DefaultHttpContext();
-        ctxNoBearer.Request.Headers["X-Signature-SHA256"] = $"sha256={hex}";
-        Assert.False(server.IsAuthorized(ctxNoBearer.Request, body));
+        var noBearer = SignedRequest("hmac-key", body, "d-1");
+        Assert.False(server.IsAuthorized(noBearer, body));
 
-        // Missing HMAC
-        var ctxNoHmac = new DefaultHttpContext();
-        ctxNoHmac.Request.Headers["Authorization"] = "Bearer bearer-token";
-        Assert.False(server.IsAuthorized(ctxNoHmac.Request, body));
+        var noHmac = new DefaultHttpContext();
+        noHmac.Request.Headers["Authorization"] = "Bearer bearer-token";
+        Assert.False(server.IsAuthorized(noHmac.Request, body));
 
-        // Both provided and valid
-        var ctxBoth = new DefaultHttpContext();
-        ctxBoth.Request.Headers["Authorization"] = "Bearer bearer-token";
-        ctxBoth.Request.Headers["X-Signature-SHA256"] = $"sha256={hex}";
-        Assert.True(server.IsAuthorized(ctxBoth.Request, body));
+        var both = SignedRequest("hmac-key", body, "d-2");
+        both.Headers["Authorization"] = "Bearer bearer-token";
+        Assert.True(server.IsAuthorized(both, body));
     }
 }

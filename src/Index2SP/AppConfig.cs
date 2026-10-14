@@ -28,8 +28,8 @@ public sealed class AppConfig
     public string InboundAuthToken { get; set; } = "";
 
     /// <summary>
-    /// Optional HMAC-SHA256 shared secret. When set, inbound requests must carry a valid HMAC-SHA256
-    /// signature matching the request body in X-Signature-SHA256, X-Hub-Signature-256, or X-Signature header.
+    /// Optional HMAC-SHA256 shared secret. When set, inbound requests must carry a valid Pebble Index
+    /// webhook v1 signature (X-Index-Signature, X-Index-Timestamp, X-Index-Delivery) and are rejected on replay.
     /// If blank, HMAC signature checking is disabled.
     /// </summary>
     [JsonConverter(typeof(SecretJsonConverter))]
