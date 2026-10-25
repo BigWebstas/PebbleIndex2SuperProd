@@ -38,7 +38,7 @@ public sealed class AiTaskClassifier : IDisposable
         string? ProjectId, List<string> TagIds, string? TaskTitle, bool IsNote, bool IsShopping, List<string> ShoppingItems,
         List<string> JoplinTagIds, bool IsCalendarEvent, string? EventTitle, DateTimeOffset? EventStart, DateTimeOffset? EventEnd,
         bool EventAllDay, bool IsMessage, string? MessageRecipient, string? MessageText, string? MessagePlatform,
-        bool IsWebSearch, string? WebSearchQuery, string? ShoppingMerchant);
+        bool IsWebSearch, string? WebSearchQuery, string? ShoppingMerchant, int? Priority);
 
     /// <param name="joplinTags">Existing Joplin tags, only consulted (and only asked of the AI)
     /// while <see cref="AppConfig.AiClassifierConfig.RequireTags"/> is on. Pass an empty list
@@ -668,6 +668,9 @@ public sealed class AiTaskClassifier : IDisposable
                 ? "Required — at least one id from the tag list below. Pick the closest fit if nothing is " +
                   "a perfect match. Never return an empty array."
                 : "ids from the tag list, or [] if none fit"),
+            new("priority", FieldKind.StringOrNull, "\"high\", \"medium\" or \"low\", only when the speaker " +
+                "clearly signalled urgency or importance (e.g. \"urgent\", \"asap\", \"important\", \"high " +
+                "priority\", \"whenever\", \"low priority\"). Null when no priority was expressed — do not guess."),
             new("isNote", FieldKind.Boolean, "true if this is a note, idea, or reference to save rather " +
                 "than an actionable to-do (e.g. a fact, a quote, something to remember)"),
             new("isShopping", FieldKind.Boolean, "true if this is a shopping / errands item — something to " +
@@ -841,6 +844,10 @@ public sealed class AiTaskClassifier : IDisposable
             ? smEl.GetString()
             : null;
         if (string.IsNullOrWhiteSpace(shoppingMerchant)) shoppingMerchant = null;
+        // Super Productivity stores priority as 1 (Low) / 2 (Medium) / 3 (High).
+        int? priority = input.TryGetValue("priority", out var prEl) && prEl.ValueKind == JsonValueKind.String
+            ? prEl.GetString()?.Trim().ToLowerInvariant() switch { "low" => 1, "medium" => 2, "high" => 3, _ => null }
+            : null;
         var joplinTagIds = requireTags ? ReadStringArray(input, "joplinTagIds") : new List<string>();
 
         var isCalendarEvent = input.TryGetValue("isCalendarEvent", out var ceEl) && ceEl.ValueKind == JsonValueKind.True;
@@ -904,7 +911,7 @@ public sealed class AiTaskClassifier : IDisposable
 
         return new Classification(resolvedProjectId, resolvedTagIds, taskTitle, isNote, isShopping, shoppingItems, resolvedJoplinTagIds,
             isCalendarEvent, eventTitle, eventStart, eventEnd, eventAllDay, isMessage, messageRecipient, messageText, messagePlatform,
-            isWebSearch, webSearchQuery, shoppingMerchant);
+            isWebSearch, webSearchQuery, shoppingMerchant, priority);
     }
 
     private static DateTimeOffset? ReadDateTimeOffset(IReadOnlyDictionary<string, JsonElement> input, string key)
@@ -959,6 +966,8 @@ public sealed class AiTaskClassifier : IDisposable
         if (requireTags)
             sb.Append("When isNote is true, you must also pick at least one tag for joplinTagIds from the " +
                       "Joplin tags list below — the closest fit if nothing is perfect. Use [] when isNote is false.\n");
+
+        sb.Append("Set priority only if the speaker explicitly expressed urgency or importance; otherwise null.\n");
 
         sb.Append("Also decide whether this describes a calendar event — something happening at a specific ");
         sb.Append("date/time — and set isCalendarEvent, eventTitle, eventStart, eventEnd, and eventAllDay ");

@@ -60,6 +60,16 @@ public class SuperSyncClientTests : IDisposable
     }
 
     [Fact]
+    public void BuildAddTaskPayload_WritesPriorityOnlyWhenSet()
+    {
+        var withPriority = SuperSyncClient.BuildAddTaskPayload("t1", new SpTaskRequest { Title = "x", Priority = 3 }, 42);
+        var without = SuperSyncClient.BuildAddTaskPayload("t2", new SpTaskRequest { Title = "x" }, 42);
+
+        Assert.Equal(3, withPriority["actionPayload"]!["task"]!["priority"]!.GetValue<int>());
+        Assert.Null(without["actionPayload"]!["task"]!["priority"]);
+    }
+
+    [Fact]
     public void NewUuidV7_IsVersion7()
     {
         Assert.Matches("^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", SuperSyncClient.NewUuidV7());

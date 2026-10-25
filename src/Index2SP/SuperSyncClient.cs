@@ -277,6 +277,8 @@ public sealed class SuperSyncClient : IDisposable
             ["attachments"] = new JsonArray(),
         };
         if (!string.IsNullOrEmpty(r.Notes)) task["notes"] = r.Notes;
+        if (r.Priority is { } priority) task["priority"] = priority;
+
         // SP keeps dueWithTime and dueDay mutually exclusive; the timed one wins.
         if (r.DueWithTime is { } due)
         {

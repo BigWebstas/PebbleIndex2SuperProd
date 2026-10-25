@@ -410,6 +410,7 @@ public sealed class WebhookServer : IAsyncDisposable
             ProjectId = template.ProjectId,
             TagIds = template.TagIds is null ? null : new List<string>(template.TagIds),
             TimeEstimate = template.TimeEstimate,
+            Priority = template.Priority,
         };
     }
 
@@ -460,6 +461,7 @@ public sealed class WebhookServer : IAsyncDisposable
                         ? result.TagIds.Concat(defaultTagIds).Distinct().ToList()
                         : result.TagIds;
             }
+            if (result.Priority is not null) taskReq.Priority = result.Priority;
             // Strips command phrasing ("add a task to", "remind me to") from the task's title.
             // A multi-item shopping capture overwrites this again per item below — harmless.
             if (result.TaskTitle is not null)
