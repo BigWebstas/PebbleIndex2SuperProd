@@ -462,6 +462,23 @@ public sealed class TrayController : IDisposable
         return m;
     }
 
+    private NativeMenu BuildPrioritySubmenu()
+    {
+        var m = new NativeMenu();
+        var current = _config.SuperProductivity.DefaultPriority;
+        foreach (var (value, label) in new[] { (0, "None"), (1, "Low"), (2, "Medium"), (3, "High") })
+        {
+            var item = new NativeMenuItem(label)
+            {
+                ToggleType = NativeMenuItemToggleType.CheckBox,
+                IsChecked = value == current,
+            };
+            item.Click += (_, _) => SetDefaultPriority(value, label);
+            m.Add(item);
+        }
+        return m;
+    }
+
     private NativeMenu BuildSuperProductivitySubmenu()
     {
         var m = new NativeMenu();
@@ -475,6 +492,7 @@ public sealed class TrayController : IDisposable
 
         m.Add(new NativeMenuItem("Default project") { Menu = BuildProjectSubmenu() });
         m.Add(new NativeMenuItem("Default tags") { Menu = BuildTagsSubmenu() });
+        m.Add(new NativeMenuItem("Default priority") { Menu = BuildPrioritySubmenu() });
         m.Add(new NativeMenuItemSeparator());
         m.Add(new NativeMenuItem(FeatureTitle("SuperSync fallback", _config.SuperProductivity.SuperSync.Enabled))
             { Menu = BuildSuperSyncSubmenu() });
@@ -2162,6 +2180,12 @@ public sealed class TrayController : IDisposable
         SaveConfig(id.Length == 0 ? "default project cleared (inbox)" : $"default project = \"{label}\" [{id}]");
         Notify("Default project updated",
             id.Length == 0 ? "New tasks go to the inbox." : $"New tasks → {label}", NotifyKind.Info);
+    }
+
+    private void SetDefaultPriority(int value, string label)
+    {
+        _config.SuperProductivity.DefaultPriority = value;
+        SaveConfig($"default priority = {label}");
     }
 
     private void SetShoppingProject(string id, string label)

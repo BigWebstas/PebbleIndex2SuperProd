@@ -119,6 +119,17 @@ public class PayloadConverterTests
     }
 
     [Fact]
+    public void ToTask_AppliesDefaultPriorityOnlyWhenConfigured()
+    {
+        var payload = new PebblePayload { Transcription = "Do the thing" };
+        var config = NewConfig();
+        Assert.Null(PayloadConverter.ToTask(payload, config).Priority);
+
+        config.SuperProductivity.DefaultPriority = 2;
+        Assert.Equal(2, PayloadConverter.ToTask(payload, config).Priority);
+    }
+
+    [Fact]
     public void ToTask_LeavesTimeEstimateNullWhenDurationNotConfigured()
     {
         var payload = new PebblePayload { Transcription = "Do the thing" };

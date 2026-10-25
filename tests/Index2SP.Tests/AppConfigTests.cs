@@ -320,6 +320,20 @@ public class AppConfigTests : IDisposable
     }
 
     [Theory]
+    [InlineData(0, 0)]    // 0 = don't set a priority
+    [InlineData(-1, 0)]
+    [InlineData(2, 2)]
+    [InlineData(9, 3)]
+    public void Normalize_ClampsDefaultPriority(int input, int expected)
+    {
+        File.WriteAllText(ConfigPath, $$"""{ "superProductivity": { "defaultPriority": {{input}} } }""");
+
+        var config = AppConfig.LoadOrCreate(ConfigPath);
+
+        Assert.Equal(expected, config.SuperProductivity.DefaultPriority);
+    }
+
+    [Theory]
     [InlineData(0, 0)]    // 0 = don't set an estimate, left alone
     [InlineData(-5, 0)]
     [InlineData(999999, 1440)]

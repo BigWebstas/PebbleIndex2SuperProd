@@ -45,6 +45,9 @@ public static class PayloadConverter
         if (config.SuperProductivity.TaskDurationMinutes > 0)
             task.TimeEstimate = config.SuperProductivity.TaskDurationMinutes * 60_000L;
 
+        if (config.SuperProductivity.DefaultPriority > 0)
+            task.Priority = config.SuperProductivity.DefaultPriority;
+
         return task;
     }
 

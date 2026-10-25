@@ -471,6 +471,10 @@ public sealed class AppConfig
         /// created task, in minutes. 0 = don't set one. Clamped 0–1440 (24h).</summary>
         public int TaskDurationMinutes { get; set; } = 0;
 
+        /// <summary>Priority applied to every created task unless the AI classifier picks one:
+        /// 1 = Low, 2 = Medium, 3 = High. 0 = don't set one. Clamped 0–3.</summary>
+        public int DefaultPriority { get; set; } = 0;
+
         /// <summary>Optional: when the AI classifier (aiClassifier.enabled) detects a shopping /
         /// errands item, file it under this project instead of whatever project it would
         /// otherwise have picked. Blank = no override, the classifier's normal pick stands.
@@ -922,6 +926,7 @@ public sealed class AppConfig
         SuperProductivity.BaseUrl = SuperProductivity.BaseUrl.TrimEnd('/');
         SuperProductivity.TagIds ??= new List<string>();
         SuperProductivity.TaskDurationMinutes = Math.Clamp(SuperProductivity.TaskDurationMinutes, 0, 1440);
+        SuperProductivity.DefaultPriority = Math.Clamp(SuperProductivity.DefaultPriority, 0, 3);
         SuperProductivity.SuperSync ??= new SuperSyncConfig();
         if (string.IsNullOrWhiteSpace(SuperProductivity.SuperSync.BaseUrl))
             SuperProductivity.SuperSync.BaseUrl = "https://sync.super-productivity.com";
