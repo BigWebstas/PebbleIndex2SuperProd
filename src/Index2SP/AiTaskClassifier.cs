@@ -668,9 +668,12 @@ public sealed class AiTaskClassifier : IDisposable
                 ? "Required — at least one id from the tag list below. Pick the closest fit if nothing is " +
                   "a perfect match. Never return an empty array."
                 : "ids from the tag list, or [] if none fit"),
-            new("priority", FieldKind.StringOrNull, "\"high\", \"medium\" or \"low\", only when the speaker " +
-                "clearly signalled urgency or importance (e.g. \"urgent\", \"asap\", \"important\", \"high " +
-                "priority\", \"whenever\", \"low priority\"). Null when no priority was expressed — do not guess."),
+            new("priority", FieldKind.StringOrNull, "\"high\", \"medium\" or \"low\". Use what the speaker " +
+                "said (\"urgent\", \"asap\", \"important\", \"high priority\", \"whenever\", \"low priority\") " +
+                "and otherwise infer it from context. High: a deadline today or tomorrow, something overdue, " +
+                "or health, safety, money owed, or other consequences of delay. Low: \"someday\", \"at some " +
+                "point\", \"when I get a chance\", nice-to-have ideas. Medium: a normal task with a looser " +
+                "deadline. Null when nothing in the transcription points either way — do not invent urgency."),
             new("isNote", FieldKind.Boolean, "true if this is a note, idea, or reference to save rather " +
                 "than an actionable to-do (e.g. a fact, a quote, something to remember)"),
             new("isShopping", FieldKind.Boolean, "true if this is a shopping / errands item — something to " +
@@ -967,7 +970,9 @@ public sealed class AiTaskClassifier : IDisposable
             sb.Append("When isNote is true, you must also pick at least one tag for joplinTagIds from the " +
                       "Joplin tags list below — the closest fit if nothing is perfect. Use [] when isNote is false.\n");
 
-        sb.Append("Set priority only if the speaker explicitly expressed urgency or importance; otherwise null.\n");
+        sb.Append("Also set priority from what the speaker said or from context — deadlines relative to the ");
+        sb.Append("reference time below, and how much delay would matter (see its description). Null when ");
+        sb.Append("nothing points either way.\n");
 
         sb.Append("Also decide whether this describes a calendar event — something happening at a specific ");
         sb.Append("date/time — and set isCalendarEvent, eventTitle, eventStart, eventEnd, and eventAllDay ");
