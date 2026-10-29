@@ -521,7 +521,7 @@ public sealed class WebhookServer : IAsyncDisposable
             var projects = await projectsTask;
             var tags = await tagsTask;
             var joplinTags = joplinTagsTask is null ? Array.Empty<SpNamedItem>() : await joplinTagsTask;
-            var homeEntities = homeEntitiesTask is null ? Array.Empty<SpNamedItem>() : await homeEntitiesTask;
+            var homeEntities = homeEntitiesTask is null ? Array.Empty<HomeAssistantClient.Entity>() : await homeEntitiesTask;
 
             // Gemini/OpenAI search under their own credential; Ollama has none of its own and
             // falls back to Claude, so it needs the same key Claude itself would.
@@ -536,8 +536,9 @@ public sealed class WebhookServer : IAsyncDisposable
                 hasSearchCredential;
 
             // Answers go out in the webhook receipt, so that has to be deliverable too.
-            var includeQuestion = _config.Telegram.Enabled && !string.IsNullOrWhiteSpace(_config.Telegram.BotToken) &&
-                _config.WebhookReceipt.Enabled && !string.IsNullOrWhiteSpace(_config.WebhookReceipt.ChatId) && hasSearchCredential;
+            var receiptReady = _config.Telegram.Enabled && !string.IsNullOrWhiteSpace(_config.Telegram.BotToken) &&
+                _config.WebhookReceipt.Enabled && !string.IsNullOrWhiteSpace(_config.WebhookReceipt.ChatId);
+            var includeQuestion = receiptReady && hasSearchCredential;
 
             var referenceTime = (recordedAt ?? DateTimeOffset.UtcNow).ToLocalTime();
             var result = await _classifier.ClassifyAsync(
@@ -611,7 +612,10 @@ public sealed class WebhookServer : IAsyncDisposable
 
             // A "search the web" request already answered itself above; this is for plain questions.
             string? questionReceipt = null;
-            if (result.IsQuestion && !webSearchSent && result.QuestionText is not null)
+            if (result.HomeAnswer is not null && receiptReady)
+                // Answered from Home Assistant's own states, so no web search is needed.
+                questionReceipt = $"Question, {PayloadConverter.CapTitle(result.HomeAnswer, 1000)}";
+            else if (result.IsQuestion && !webSearchSent && result.QuestionText is not null)
                 questionReceipt = await AnswerQuestionAsync(result.QuestionText);
 
             string? homeReceipt = null;
@@ -732,7 +736,7 @@ public sealed class WebhookServer : IAsyncDisposable
         return $"Question, {PayloadConverter.CapTitle(answer, 1000)}";
     }
 
-    private async Task<IReadOnlyList<SpNamedItem>> FetchHomeEntitiesAsync()
+    private async Task<IReadOnlyList<HomeAssistantClient.Entity>> FetchHomeEntitiesAsync()
     {
         try
         {
@@ -742,7 +746,7 @@ public sealed class WebhookServer : IAsyncDisposable
         catch (Exception ex) when (ex is HomeAssistantApiException or HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
         {
             _log.Warn($"AI classify: couldn't load Home Assistant entities ({ex.Message}) — continuing without them");
-            return Array.Empty<SpNamedItem>();
+            return Array.Empty<HomeAssistantClient.Entity>();
         }
     }
 
@@ -753,7 +757,7 @@ public sealed class WebhookServer : IAsyncDisposable
     /// null if none did. Normally additive, but with aiClassifier.exclusiveRouting on a non-null
     /// result tells the caller to skip the Super Productivity task.
     /// </summary>
-    private async Task<string?> CallHomeAssistantAsync(string action, List<string> entityIds, IReadOnlyList<SpNamedItem> entities)
+    private async Task<string?> CallHomeAssistantAsync(string action, List<string> entityIds, IReadOnlyList<HomeAssistantClient.Entity> entities)
     {
         var done = new List<string>();
         try
@@ -764,7 +768,7 @@ public sealed class WebhookServer : IAsyncDisposable
                 try
                 {
                     await ha.CallAsync(id, action, CancellationToken.None);
-                    done.Add(entities.FirstOrDefault(e => e.Id == id)?.Title ?? id);
+                    done.Add(entities.FirstOrDefault(e => e.Id == id)?.Name ?? id);
                     _log.Info($"Home Assistant: {action} {id}");
                 }
                 catch (Exception ex) when (ex is HomeAssistantApiException or HttpRequestException or TaskCanceledException)

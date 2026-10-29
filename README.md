@@ -1,4 +1,4 @@
-# Pebble Index → Super Productivity, Joplin, Calendar and Telegram
+# Pebble Index → Super Productivity, Joplin, Calendar, Home Assistant and more
 
 [![Build](https://github.com/BigWebstas/PebbleIndex2SuperProd/actions/workflows/build.yml/badge.svg)](https://github.com/BigWebstas/PebbleIndex2SuperProd/actions/workflows/build.yml)
 
@@ -6,7 +6,9 @@ A tray app (Avalonia, .NET 8, Windows + Linux) that turns [Pebble Index 01](http
 voice notes into [Super Productivity](https://super-productivity.com/) tasks — and, optionally,
 lets an AI classifier (Claude, Gemini, OpenAI, or a local Ollama model) route each one further:
 shopping items split one-per-task, notes saved to [Joplin](https://joplinapp.org/), dated items
-added to Google Calendar, "send a message to X" sent through [Beeper](https://www.beeper.com/).
+added to Google Calendar, "send a message to X" sent through [Beeper](https://www.beeper.com/),
+shows and movies added to Sonarr / Radarr, smart-home commands sent to Home Assistant, and
+spoken questions answered back over Telegram.
 
 ```
 Pebble Index 01 ──HTTPS──▶ your tunnel ──▶ Index2SP :8787/pebble ──▶ Super Productivity :3876
@@ -23,10 +25,15 @@ Pebble Index 01 ──HTTPS──▶ your tunnel ──▶ Index2SP :8787/pebble
   me to", "send a message to X saying", etc. down to just the content), picks project/tags,
   splits multi-item shopping lists, sets due dates, and — per destination toggle — files notes
   to Joplin, adds calendar events, sends a Beeper message, or runs a real web search (via
-  Claude) and sends the summary through a Telegram bot. **Beeper sends immediately, with
-  no confirmation step.**
-- Uncaught errors are logged and reported as an SP task instead of crashing silently.
-  Integration outages get their own SP task too.
+  Claude) and sends the summary through a Telegram bot, adds a TV show or movie to Sonarr /
+  Radarr, turns lights and other devices on or off through Home Assistant, or answers a spoken
+  question in the Telegram receipt. **Beeper sends immediately, and Home Assistant commands run
+  immediately, with no confirmation step.**
+- Uncaught errors are logged and reported as an SP task instead of crashing silently, and the
+  app relaunches itself after a fatal crash (it gives up after 4 crashes in 10 minutes). A webhook
+  cut off mid-processing is journaled and replayed on the next start, handled message ids survive
+  restarts so a sender retry can't create a duplicate, and the listener retries binding its port
+  if the old instance hasn't released it yet. Integration outages get their own SP task too.
 - Checks GitHub for a newer release and flags it in the tray menu — downloads it on request,
   nothing runs without you clicking it.
 
@@ -51,7 +58,8 @@ Grab a [release](https://github.com/BigWebstas/PebbleIndex2SuperProd/releases/la
 
 Tray → **Edit config…** opens `config.json` (`%APPDATA%\Index2SP\` on Windows,
 `~/.config/Index2SP/` on Linux); **Reload config** applies changes. Every destination —
-Super Productivity, AI classifier, Joplin, Google Calendar, Beeper, Telegram, Whisper — has its
+Super Productivity, AI classifier, Joplin, Google Calendar, Beeper, Home Assistant, Sonarr,
+Radarr, Telegram, Whisper — has its
 own tray submenu: enable, credentials, and **Test connection** (or **Test all connections** for
 one combined check). Full field reference: [`config.example.json`](config.example.json).
 
@@ -97,7 +105,10 @@ Two setups need an extra step first:
 - **Home Assistant** — create a long-lived access token (your profile → Security) and paste it
   in with your HA URL. "Turn off the kitchen lights" is matched against your light/switch/fan/
   cover/scene/script entities (nothing else — no locks or alarms) and each match is called.
-  The receipt names what actually worked ("Turned Off, Kitchen Light").
+  The receipt names what actually worked ("Turned Off, Kitchen Light"). Ask about the home —
+  "is the garage door open?" — and the receipt carries the answer from Home Assistant's live
+  states (`Webhook Received, Question, Yes, the main garage door is open`); door/motion sensors,
+  locks, thermostats and people are readable but never controllable. Needs the Webhook receipt.
 - **Sonarr / Radarr** — paste each app's URL and API key (Settings → General) in the tray. "Add
   Severance to Sonarr" or "get me the movie Dune" adds the first match, monitored and searched,
   to the first root folder and quality profile (override both in `config.json`). A title already

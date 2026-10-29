@@ -1114,7 +1114,7 @@ public sealed class TrayController : IDisposable
             () => _ = SetIntegrationValueAsync("Home Assistant", "access token", masked: true, v => cfg.AccessToken = v)));
         m.Add(Action("Test Home Assistant connection", () => _ = RunHomeAssistantHealthCheckAsync(manual: true)));
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.AccessToken) ? "No access token set" : "Access token is set"));
-        m.Add(Disabled("Lights, switches, fans, covers, scenes and scripts only"));
+        m.Add(Disabled("Controls lights, switches, fans, covers, scenes, scripts; reads doors, locks, thermostats"));
         return m;
     }
 

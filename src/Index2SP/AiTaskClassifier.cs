@@ -39,7 +39,8 @@ public sealed class AiTaskClassifier : IDisposable
         List<string> JoplinTagIds, bool IsCalendarEvent, string? EventTitle, DateTimeOffset? EventStart, DateTimeOffset? EventEnd,
         bool EventAllDay, bool IsMessage, string? MessageRecipient, string? MessageText, string? MessagePlatform,
         bool IsWebSearch, string? WebSearchQuery, string? ShoppingMerchant, int? Priority, string? MediaKind = null,
-        string? MediaTitle = null, string? HomeAction = null, List<string>? HomeEntityIds = null, bool IsQuestion = false, string? QuestionText = null);
+        string? MediaTitle = null, string? HomeAction = null, List<string>? HomeEntityIds = null, bool IsQuestion = false, string? QuestionText = null,
+        string? HomeAnswer = null);
 
     /// <param name="joplinTags">Existing Joplin tags, only consulted (and only asked of the AI)
     /// while <see cref="AppConfig.AiClassifierConfig.RequireTags"/> is on. Pass an empty list
@@ -53,7 +54,7 @@ public sealed class AiTaskClassifier : IDisposable
     /// intent at all — pass the caller's web search + Beeper enabled flag.</param>
     /// <param name="includeQuestion">Whether to ask the AI to detect a question to be answered
     /// right now — pass whether an answer can actually be delivered (receipt chat + search credential).</param>
-    /// <param name="homeEntities">Controllable Home Assistant entities; when non-empty the AI is
+    /// <param name="homeEntities">Home Assistant entities with their current state; when non-empty the AI is
     /// also asked to detect a device command and pick from these. Pass an empty list when Home
     /// Assistant isn't enabled.</param>
     /// <param name="includeMedia">Whether to ask the AI to detect an "add this TV show / movie"
@@ -67,7 +68,7 @@ public sealed class AiTaskClassifier : IDisposable
         bool includeMessage,
         bool includeWebSearch,
         bool includeMedia,
-        IReadOnlyList<SpNamedItem> homeEntities,
+        IReadOnlyList<HomeAssistantClient.Entity> homeEntities,
         bool includeQuestion,
         CancellationToken ct)
     {
@@ -775,6 +776,10 @@ public sealed class AiTaskClassifier : IDisposable
                 " if this is a command to control a device right now — e.g. \"turn off the kitchen lights\" is " +
                 "turn_off, \"open the garage\" is open, \"activate movie night\" is turn_on. Null for anything else, " +
                 "including a to-do that merely mentions a device (\"buy new lights\")."));
+            fields.Add(new("homeAnswer", FieldKind.StringOrNull, "Only when the user asks a question about the " +
+                "current state of something in the home (e.g. \"is the garage door open?\", \"is anyone home?\"): a " +
+                "short natural answer using ONLY the states in the Home Assistant entities list, e.g. \"Yes, the " +
+                "main garage door is open\". Say so plainly if the list doesn't cover it. Null for anything else."));
             fields.Add(new("homeEntityIds", FieldKind.StringArray, "Required when homeAction is set: ids from the " +
                 "Home Assistant entities list below that the command refers to (e.g. every light in the kitchen). " +
                 "Only ids that appear in the list. [] otherwise."));
@@ -875,7 +880,7 @@ public sealed class AiTaskClassifier : IDisposable
     private Classification BuildClassification(
         IReadOnlyDictionary<string, JsonElement> input, IReadOnlyList<SpNamedItem> projects, IReadOnlyList<SpNamedItem> tags,
         IReadOnlyList<SpNamedItem> joplinTags, bool requireTags, bool includeMessage, bool includeWebSearch, bool includeMedia,
-        IReadOnlyList<SpNamedItem> homeEntities, bool includeQuestion)
+        IReadOnlyList<HomeAssistantClient.Entity> homeEntities, bool includeQuestion)
     {
         var projectId = input.TryGetValue("projectId", out var pEl) && pEl.ValueKind == JsonValueKind.String ? pEl.GetString() : null;
         var taskTitle = input.TryGetValue("taskTitle", out var ttEl) && ttEl.ValueKind == JsonValueKind.String
@@ -970,6 +975,7 @@ public sealed class AiTaskClassifier : IDisposable
             if (isQuestion && string.IsNullOrWhiteSpace(questionText)) isQuestion = false;
         }
 
+        string? homeAnswer = null;
         string? homeAction = null;
         var homeEntityIds = new List<string>();
         if (homeEntities.Count > 0)
@@ -982,6 +988,10 @@ public sealed class AiTaskClassifier : IDisposable
                 .Where(id => homeEntities.Any(e => e.Id == id) && homeAction is not null && HomeAssistantClient.IsAllowed(id, homeAction))
                 .Distinct().ToList();
             if (homeEntityIds.Count == 0) homeAction = null;
+            homeAnswer = input.TryGetValue("homeAnswer", out var haEl2) && haEl2.ValueKind == JsonValueKind.String
+                ? haEl2.GetString()?.Trim()
+                : null;
+            if (string.IsNullOrWhiteSpace(homeAnswer)) homeAnswer = null;
         }
 
         var resolvedProjectId = projectId is not null && projects.Any(p => p.Id == projectId) ? projectId : null;
@@ -997,11 +1007,12 @@ public sealed class AiTaskClassifier : IDisposable
                   $", isWebSearch={isWebSearch}" + (isWebSearch ? $", webSearchQuery={webSearchQuery}" : "") +
                   (mediaKind is not null ? $", media={mediaKind}:{mediaTitle}" : "") +
                   (homeAction is not null ? $", home={homeAction}:[{string.Join(',', homeEntityIds)}]" : "") +
-                  (isQuestion ? $", question={questionText}" : ""));
+                  (isQuestion ? $", question={questionText}" : "") +
+                  (homeAnswer is not null ? $", homeAnswer={homeAnswer}" : ""));
 
         return new Classification(resolvedProjectId, resolvedTagIds, taskTitle, isNote, isShopping, shoppingItems, resolvedJoplinTagIds,
             isCalendarEvent, eventTitle, eventStart, eventEnd, eventAllDay, isMessage, messageRecipient, messageText, messagePlatform,
-            isWebSearch, webSearchQuery, shoppingMerchant, priority, mediaKind, mediaTitle, homeAction, homeEntityIds, isQuestion, questionText);
+            isWebSearch, webSearchQuery, shoppingMerchant, priority, mediaKind, mediaTitle, homeAction, homeEntityIds, isQuestion, questionText, homeAnswer);
     }
 
     private static DateTimeOffset? ReadDateTimeOffset(IReadOnlyDictionary<string, JsonElement> input, string key)
@@ -1029,7 +1040,7 @@ public sealed class AiTaskClassifier : IDisposable
     private static string BuildPrompt(
         string transcription, IReadOnlyList<SpNamedItem> projects, IReadOnlyList<SpNamedItem> tags,
         IReadOnlyList<SpNamedItem> joplinTags, bool requireTags, DateTimeOffset referenceTime, bool includeMessage,
-        bool includeWebSearch, bool includeMedia, IReadOnlyList<SpNamedItem> homeEntities, bool includeQuestion)
+        bool includeWebSearch, bool includeMedia, IReadOnlyList<HomeAssistantClient.Entity> homeEntities, bool includeQuestion)
     {
         var sb = new StringBuilder();
         sb.Append("You are filing a voice-note transcription into Super Productivity. ");
@@ -1086,13 +1097,15 @@ public sealed class AiTaskClassifier : IDisposable
 
         if (includeQuestion)
             sb.Append("Also decide whether this is a question the user wants answered right now (e.g. " +
-                      "\"will it rain tomorrow?\") and set isQuestion and questionText accordingly (see their " +
+                      "\"will it rain tomorrow?\"; a question about the state of something in the home is answered " +
+                      "through homeAnswer instead) and set isQuestion and questionText accordingly (see their " +
                       "descriptions). A \"search the web for X\" request is a web search, not a question.\n");
 
         if (homeEntities.Count > 0)
             sb.Append("Also decide whether this is a command to control a smart-home device right now " +
                       "(e.g. \"turn off the kitchen lights\") and set homeAction and homeEntityIds accordingly " +
-                      "(see their descriptions).\n");
+                      "(see their descriptions). If instead it asks about the current state of something at home " +
+                      "(\"is the garage door open?\"), set homeAnswer.\n");
 
         sb.Append('\n');
         sb.Append("Projects:\n");
@@ -1112,8 +1125,9 @@ public sealed class AiTaskClassifier : IDisposable
 
         if (homeEntities.Count > 0)
         {
-            sb.Append("\nHome Assistant entities:\n");
-            foreach (var e in homeEntities) sb.Append("- ").Append(e.Id).Append(": ").Append(e.Title).Append('\n');
+            sb.Append("\nHome Assistant entities (current state in brackets):\n");
+            foreach (var e in homeEntities)
+                sb.Append("- ").Append(e.Id).Append(": ").Append(e.Name).Append(" [").Append(e.State).Append("]\n");
         }
 
         sb.Append("\nTranscription:\n").Append(transcription);

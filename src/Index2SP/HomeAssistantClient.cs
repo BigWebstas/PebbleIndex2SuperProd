@@ -8,7 +8,7 @@ namespace Index2SP;
 /// Thin client for Home Assistant's REST API. Used only as an additional, best-effort destination
 /// for transcriptions the AI classifier reads as "turn off the kitchen lights" — it never replaces
 /// the Super Productivity task. Because a spoken sentence drives real devices, only the domains
-/// and services in <see cref="Services"/> can be reached — nothing the AI returns is forwarded as-is.
+/// and services in <see cref="Services"/> can be controlled (a few more domains are readable) — nothing the AI returns is forwarded as-is.
 /// </summary>
 public sealed class HomeAssistantClient : IDisposable
 {
@@ -30,6 +30,12 @@ public sealed class HomeAssistantClient : IDisposable
         ["turn_on"] = "turn_on", ["turn_off"] = "turn_off", ["toggle"] = "toggle",
     };
 
+    /// <summary>Domains whose current state can be read to answer a question ("is the garage door
+    /// open?") but that can never be controlled — they have no entry in <see cref="Services"/>.</summary>
+    private static readonly HashSet<string> ReadOnlyDomains = new() { "binary_sensor", "lock", "climate", "person" };
+
+    public sealed record Entity(string Id, string Name, string State);
+
     public static readonly IReadOnlyList<string> Actions = new[] { "turn_on", "turn_off", "toggle", "open", "close" };
 
     private readonly HttpClient _http;
@@ -47,24 +53,26 @@ public sealed class HomeAssistantClient : IDisposable
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", config.AccessToken);
     }
 
-    /// <summary>Controllable entities (id + friendly name), limited to the domains above.</summary>
-    public async Task<IReadOnlyList<SpNamedItem>> GetEntitiesAsync(CancellationToken ct = default)
+    /// <summary>Entities (id, friendly name, current state) in the controllable and read-only domains above.</summary>
+    public async Task<IReadOnlyList<Entity>> GetEntitiesAsync(CancellationToken ct = default)
     {
         using var resp = await _http.GetAsync("api/states", ct);
         Check(resp, "GET /api/states");
 
         var root = JsonSerializer.Deserialize<JsonElement>(await resp.Content.ReadAsStringAsync(ct));
-        var list = new List<SpNamedItem>();
+        var list = new List<Entity>();
         if (root.ValueKind != JsonValueKind.Array) return list;
 
         foreach (var el in root.EnumerateArray())
         {
             if (!el.TryGetProperty("entity_id", out var idEl) || idEl.GetString() is not { Length: > 0 } id) continue;
-            if (!Services.ContainsKey(DomainOf(id))) continue;
+            var domain = DomainOf(id);
+            if (!Services.ContainsKey(domain) && !ReadOnlyDomains.Contains(domain)) continue;
             var name = el.TryGetProperty("attributes", out var attrs) && attrs.TryGetProperty("friendly_name", out var nEl)
                 ? nEl.GetString()
                 : null;
-            list.Add(new SpNamedItem(id, string.IsNullOrWhiteSpace(name) ? id : name!));
+            var state = el.TryGetProperty("state", out var sEl) ? sEl.GetString() : null;
+            list.Add(new Entity(id, string.IsNullOrWhiteSpace(name) ? id : name!, state ?? "unknown"));
         }
         return list;
     }
