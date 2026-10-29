@@ -11,8 +11,14 @@ internal static class Program
     [STAThread]
     public static int Main(string[] args)
     {
-        _instanceLock = new Mutex(initiallyOwned: true, "Index2SP.SingleInstance", out var isNew);
-        if (!isNew)
+        // A relaunch after a crash can start while the dying process still holds the lock.
+        var restarted = args.Contains(SelfRestart.Flag);
+        _instanceLock = new Mutex(initiallyOwned: false, "Index2SP.SingleInstance");
+        bool owned;
+        try { owned = _instanceLock.WaitOne(restarted ? TimeSpan.FromSeconds(10) : TimeSpan.Zero); }
+        // The previous process died holding it — the lock is ours now.
+        catch (AbandonedMutexException) { owned = true; }
+        if (!owned)
         {
             Console.Error.WriteLine("Index2SP is already running (check the system tray).");
             return 1;

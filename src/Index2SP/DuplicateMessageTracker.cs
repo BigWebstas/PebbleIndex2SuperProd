@@ -1,10 +1,14 @@
+using System.Text.Json;
+
 namespace Index2SP;
 
 /// <summary>
 /// Remembers webhook message ids so the same message is only acted on once — a Pebble retry
 /// after a slow tunnel would otherwise create the task twice. An id is claimed while its
 /// webhook is processing, kept after it succeeds, and released if it fails so a retry can run.
-/// Completed ids are forgotten after <see cref="Retention"/> to keep memory bounded.
+/// Completed ids are forgotten after <see cref="Retention"/> to keep memory bounded. Given a
+/// <c>persistPath</c>, completed ids also survive a restart (best-effort — a file that can't be
+/// read or written just means starting empty, as before).
 /// </summary>
 public sealed class DuplicateMessageTracker
 {
@@ -17,7 +21,25 @@ public sealed class DuplicateMessageTracker
     private readonly Dictionary<string, DateTimeOffset> _completed = new(StringComparer.Ordinal);
     private readonly Func<DateTimeOffset> _now;
 
-    public DuplicateMessageTracker(Func<DateTimeOffset>? now = null) => _now = now ?? (() => DateTimeOffset.UtcNow);
+    private readonly string? _persistPath;
+
+    public DuplicateMessageTracker(Func<DateTimeOffset>? now = null, string? persistPath = null)
+    {
+        _now = now ?? (() => DateTimeOffset.UtcNow);
+        _persistPath = persistPath;
+        if (persistPath is null) return;
+
+        try
+        {
+            if (File.Exists(persistPath) &&
+                JsonSerializer.Deserialize<Dictionary<string, DateTimeOffset>>(File.ReadAllText(persistPath)) is { } saved)
+            {
+                foreach (var (id, at) in saved) _completed[id] = at;
+                PruneExpired();
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { }
+    }
 
     /// <summary>Claims <paramref name="id"/> for processing. Only <see cref="Claim.New"/> means
     /// the caller owns it and must later call <see cref="Complete"/>.</summary>
@@ -39,8 +61,22 @@ public sealed class DuplicateMessageTracker
         lock (_gate)
         {
             _inProgress.Remove(id);
-            if (succeeded) _completed[id] = _now();
+            if (!succeeded) return;
+            _completed[id] = _now();
+            Persist();
         }
+    }
+
+    private void Persist()
+    {
+        if (_persistPath is null) return;
+        try
+        {
+            var tmp = _persistPath + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(_completed));
+            File.Move(tmp, _persistPath, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 
     private void PruneExpired()

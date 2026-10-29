@@ -22,14 +22,22 @@ public sealed class WebhookServer : IAsyncDisposable
     private readonly CaptureTagResolver _captureTag;
     private readonly Outbox _outbox;
     private readonly AiTaskClassifier _classifier;
-    private readonly DuplicateMessageTracker _seenMessages = new();
+    private readonly DuplicateMessageTracker _seenMessages;
+    private readonly Inbox? _inbox;
     private readonly string _webhookPath;
     private readonly string _healthPath;
     private WebApplication? _app;
     private SuperProductivityClient? _spClient;
 
-    public WebhookServer(AppConfig config, Logger log, CaptureTagResolver captureTag, Outbox outbox, AiTaskClassifier classifier)
+    public WebhookServer(AppConfig config, Logger log, CaptureTagResolver captureTag, Outbox outbox, AiTaskClassifier classifier,
+        string? stateDir = null)
     {
+        // With a state directory, handled message ids and in-flight webhooks survive a restart;
+        // without one (tests), both stay in memory only.
+        _seenMessages = new DuplicateMessageTracker(
+            persistPath: stateDir is null ? null : Path.Combine(stateDir, "seen-messages.json"));
+        _inbox = stateDir is null ? null : new Inbox(stateDir, log);
+
         _config = config;
         _log = log;
         _captureTag = captureTag;
@@ -52,10 +60,42 @@ public sealed class WebhookServer : IAsyncDisposable
     /// <summary>Raised on the thread pool for a Pebble connectivity-test webhook (no task created).</summary>
     public event Action<string>? TestEventReceived;      // (remote)
 
+    /// <summary>A port still held by a previous instance (a quick restart) usually frees up within
+    /// seconds, so binding is retried a few times before giving up.</summary>
+    private const int BindAttempts = 5;
+
     public async Task StartAsync()
     {
         if (_app is not null) return;
 
+        // Claimed before the listener opens, so a sender's retry of a webhook we're about to
+        // replay is recognised as a duplicate rather than processed twice.
+        var replay = ClaimPendingInbox();
+
+        for (var attempt = 1; ; attempt++)
+        {
+            var app = BuildApp();
+            try
+            {
+                await app.StartAsync();
+                _app = app;
+                break;
+            }
+            catch (Exception ex)
+            {
+                await app.DisposeAsync();
+                if (ex is not IOException || attempt >= BindAttempts) throw;
+                _log.Warn($"Could not bind {_config.ListenAddress}:{_config.Port} ({ex.Message}) — retrying ({attempt}/{BindAttempts - 1})");
+                await Task.Delay(TimeSpan.FromSeconds(2));
+            }
+        }
+
+        LogStarted();
+        if (replay.Count > 0) _ = Task.Run(() => ReplayInboxAsync(replay));
+    }
+
+    private WebApplication BuildApp()
+    {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
             EnvironmentName = Environments.Production,
@@ -95,9 +135,11 @@ public sealed class WebhookServer : IAsyncDisposable
             new { ok = false, error = new { message = $"POST your Pebble webhook to {_webhookPath}" } },
             statusCode: StatusCodes.Status404NotFound));
 
-        await app.StartAsync();
-        _app = app;
+        return app;
+    }
 
+    private void LogStarted()
+    {
         _log.Info($"Webhook listener started on http://{_config.ListenAddress}:{_config.Port}{_webhookPath}");
         if (string.IsNullOrEmpty(_config.InboundAuthToken) && string.IsNullOrEmpty(_config.HmacSecret))
             _log.Warn("No inboundAuthToken or hmacSecret set — anyone who can reach the listener can create tasks.");
@@ -193,7 +235,7 @@ public sealed class WebhookServer : IAsyncDisposable
         }
 
         if (string.IsNullOrEmpty(messageId))
-            return await ProcessPayloadAsync(ctx, remote, payload, audioFile);
+            return await ProcessPayloadAsync(ctx.RequestAborted, remote, payload, audioFile);
 
         switch (_seenMessages.TryClaim(messageId))
         {
@@ -206,10 +248,14 @@ public sealed class WebhookServer : IAsyncDisposable
                 return Results.Json(new { ok = true, data = new { duplicate = true, id = messageId, message = "already processed" } });
         }
 
+        // Journal before any work starts, so a crash mid-processing can be replayed on restart.
+        // Audio-only webhooks aren't journaled — the audio itself isn't kept.
+        if (!string.IsNullOrWhiteSpace(payload.Transcription)) _inbox?.Save(messageId, payload);
+
         var succeeded = false;
         try
         {
-            var result = await ProcessPayloadAsync(ctx, remote, payload, audioFile);
+            var result = await ProcessPayloadAsync(ctx.RequestAborted, remote, payload, audioFile);
             succeeded = result is not IStatusCodeHttpResult { StatusCode: >= 400 };
             return result;
         }
@@ -217,10 +263,49 @@ public sealed class WebhookServer : IAsyncDisposable
         {
             // A failed attempt releases the id so the sender's retry is processed normally.
             _seenMessages.Complete(messageId, succeeded);
+            _inbox?.Remove(messageId);
         }
     }
 
-    private async Task<IResult> ProcessPayloadAsync(HttpContext ctx, string remote, PebblePayload payload, IFormFile? audioFile)
+    /// <summary>Webhooks cut off by a crash or kill last time, with their ids claimed so a
+    /// sender retry can't race the replay. An id already handled (persisted tracker) is dropped.</summary>
+    private List<Inbox.Item> ClaimPendingInbox()
+    {
+        var claimed = new List<Inbox.Item>();
+        foreach (var item in _inbox?.TakePending() ?? new List<Inbox.Item>())
+        {
+            if (_seenMessages.TryClaim(item.Id) == DuplicateMessageTracker.Claim.New)
+                claimed.Add(item);
+            else
+                _inbox!.Remove(item.Id);
+        }
+        return claimed;
+    }
+
+    private async Task ReplayInboxAsync(List<Inbox.Item> items)
+    {
+        foreach (var item in items)
+        {
+            var succeeded = false;
+            try
+            {
+                _log.Warn($"Replaying webhook '{item.Id}' that was interrupted last run");
+                var result = await ProcessPayloadAsync(CancellationToken.None, "inbox-replay", item.Payload, null);
+                succeeded = result is not IStatusCodeHttpResult { StatusCode: >= 400 };
+            }
+            catch (Exception ex)
+            {
+                _log.Error($"Replay of webhook '{item.Id}' failed", ex);
+            }
+            finally
+            {
+                _seenMessages.Complete(item.Id, succeeded);
+                _inbox?.Remove(item.Id);
+            }
+        }
+    }
+
+    private async Task<IResult> ProcessPayloadAsync(CancellationToken ct, string remote, PebblePayload payload, IFormFile? audioFile)
     {
         // Pebble normally transcribes on-device; this only fires for a genuinely audio-only
         // webhook, and never overrides a transcription Pebble already sent.
@@ -229,7 +314,7 @@ public sealed class WebhookServer : IAsyncDisposable
             try
             {
                 using var audioBytes = new MemoryStream();
-                await audioFile.CopyToAsync(audioBytes, ctx.RequestAborted);
+                await audioFile.CopyToAsync(audioBytes, ct);
                 var audioMemory = audioBytes.GetBuffer().AsMemory(0, (int)audioBytes.Length);
 
                 ReadOnlyMemory<byte> uploadMemory = audioMemory;
@@ -238,7 +323,7 @@ public sealed class WebhookServer : IAsyncDisposable
                 try
                 {
                     var (transcodedAudio, transcodedName, _) = await AudioDecoder.EnsureWavAsync(
-                        audioMemory, audioFile.FileName, ctx.RequestAborted);
+                        audioMemory, audioFile.FileName, ct);
                     uploadMemory = transcodedAudio;
                     uploadFileName = transcodedName;
                     if (uploadMemory.Length != audioMemory.Length || !uploadMemory.Equals(audioMemory))
@@ -252,7 +337,7 @@ public sealed class WebhookServer : IAsyncDisposable
                 }
 
                 using var whisperAsr = new WhisperAsrClient(_config.WhisperAsr, _log);
-                var text = await whisperAsr.TranscribeAsync(uploadMemory, uploadFileName, ctx.RequestAborted);
+                var text = await whisperAsr.TranscribeAsync(uploadMemory, uploadFileName, ct);
                 if (text is not null)
                 {
                     _log.Info($"Whisper ASR transcribed audio from {remote} ({uploadMemory.Length} bytes): \"{text}\"");

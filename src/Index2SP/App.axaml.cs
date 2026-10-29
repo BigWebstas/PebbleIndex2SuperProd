@@ -58,7 +58,10 @@ public partial class App : Application
             AppDomain.CurrentDomain.UnhandledException += (_, e) =>
             {
                 if (e.ExceptionObject is Exception ex2)
+                {
                     CrashReporter.ReportFatal(config, log, ex2, "the app domain");
+                    SelfRestart.TryRestart(log);
+                }
                 else
                     log.Error($"Unhandled non-Exception object thrown: {e.ExceptionObject}");
             };

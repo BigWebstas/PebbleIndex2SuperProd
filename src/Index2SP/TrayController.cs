@@ -225,7 +225,6 @@ public sealed class TrayController : IDisposable
 
         var queued = _outbox.PendingCount;
 
-        menu.Add(Disabled(StatusLine()));
         menu.Add(Disabled($"Tasks created: {_created}   failed: {_failed}   queued: {queued}   tests: {_tests}"));
         menu.Add(new NativeMenuItemSeparator());
 
@@ -1339,7 +1338,7 @@ public sealed class TrayController : IDisposable
     {
         try
         {
-            _server = new WebhookServer(_config, _log, _captureTag, _outbox, _classifier);
+            _server = new WebhookServer(_config, _log, _captureTag, _outbox, _classifier, AppConfig.ConfigDirectory);
             _server.TaskCreated += OnTaskCreated;
             _server.WebhookFailed += OnWebhookFailed;
             _server.TaskQueued += OnTaskQueued;
