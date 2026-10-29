@@ -66,6 +66,28 @@
     "apiToken": "paste-a-personal-access-token-from-Beeper-Desktop-API-settings",
     "timeoutSeconds": 8
   },
+  "homeAssistant": {
+    "enabled": false,
+    "baseUrl": "http://homeassistant.local:8123",
+    "accessToken": "paste-a-long-lived-access-token-from-your-HA-profile",
+    "timeoutSeconds": 8
+  },
+  "sonarr": {
+    "enabled": false,
+    "baseUrl": "http://127.0.0.1:8989",
+    "apiKey": "paste-from-Sonarr-Settings-General",
+    "rootFolderPath": "",
+    "qualityProfileId": 0,
+    "timeoutSeconds": 8
+  },
+  "radarr": {
+    "enabled": false,
+    "baseUrl": "http://127.0.0.1:7878",
+    "apiKey": "paste-from-Radarr-Settings-General",
+    "rootFolderPath": "",
+    "qualityProfileId": 0,
+    "timeoutSeconds": 8
+  },
   "whisperAsr": {
     "enabled": false,
     "mode": "embedded",

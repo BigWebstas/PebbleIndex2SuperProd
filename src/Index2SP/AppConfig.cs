@@ -310,6 +310,68 @@ public sealed class AppConfig
         public int TimeoutSeconds { get; set; } = 8;
     }
 
+    public HomeAssistantConfig HomeAssistant { get; set; } = new();
+
+    /// <summary>
+    /// Optional: when the AI classifier decides a transcription is a command for a device
+    /// ("turn off the kitchen lights"), call Home Assistant's REST API. Limited to lights,
+    /// switches, fans, input booleans, covers, scenes and scripts. The Super Productivity task is
+    /// still created either way — additive, never a replacement.
+    /// </summary>
+    public sealed class HomeAssistantConfig
+    {
+        public bool Enabled { get; set; } = false;
+
+        public string BaseUrl { get; set; } = "http://homeassistant.local:8123";
+
+        /// <summary>Long-lived access token from your HA profile → Security.</summary>
+        [JsonConverter(typeof(SecretJsonConverter))]
+        public string AccessToken { get; set; } = "";
+
+        /// <summary>Seconds to wait before giving up. Clamped 2–30.</summary>
+        public int TimeoutSeconds { get; set; } = 8;
+    }
+
+    public SonarrConfig Sonarr { get; set; } = new();
+
+    public RadarrConfig Radarr { get; set; } = new();
+
+    /// <summary>
+    /// Optional: when the AI classifier decides a transcription is a request to add a TV show
+    /// ("add Severance to Sonarr") or a movie ("get me Dune Part Two"), look it up and add it
+    /// through Sonarr / Radarr, monitored and searched for immediately. The Super Productivity
+    /// task is still created either way — additive, never a replacement.
+    /// </summary>
+    public class ArrConfig
+    {
+        public bool Enabled { get; set; } = false;
+
+        public string BaseUrl { get; set; } = "";
+
+        /// <summary>From Sonarr / Radarr → Settings → General → API Key.</summary>
+        [JsonConverter(typeof(SecretJsonConverter))]
+        public string ApiKey { get; set; } = "";
+
+        /// <summary>Where new titles are stored. Blank = the first root folder configured.</summary>
+        public string RootFolderPath { get; set; } = "";
+
+        /// <summary>Quality profile id new titles use. 0 = the first profile configured.</summary>
+        public int QualityProfileId { get; set; } = 0;
+
+        /// <summary>Seconds to wait before giving up. Clamped 2–30.</summary>
+        public int TimeoutSeconds { get; set; } = 8;
+    }
+
+    public sealed class SonarrConfig : ArrConfig
+    {
+        public SonarrConfig() => BaseUrl = "http://127.0.0.1:8989";
+    }
+
+    public sealed class RadarrConfig : ArrConfig
+    {
+        public RadarrConfig() => BaseUrl = "http://127.0.0.1:7878";
+    }
+
     /// <summary>
     /// Optional: when the AI classifier decides a transcription describes a dated/timed event
     /// ("dinner with parents on the 18th at 5pm"), also create it on Google Calendar. The Super
@@ -826,6 +888,17 @@ public sealed class AppConfig
         Beeper ??= new BeeperConfig();
         Beeper.TimeoutSeconds = Math.Clamp(Beeper.TimeoutSeconds, 2, 30);
         if (string.IsNullOrWhiteSpace(Beeper.BaseUrl)) Beeper.BaseUrl = "http://127.0.0.1:23373";
+        HomeAssistant ??= new HomeAssistantConfig();
+        HomeAssistant.TimeoutSeconds = Math.Clamp(HomeAssistant.TimeoutSeconds, 2, 30);
+        if (string.IsNullOrWhiteSpace(HomeAssistant.BaseUrl)) HomeAssistant.BaseUrl = "http://homeassistant.local:8123";
+        HomeAssistant.BaseUrl = HomeAssistant.BaseUrl.TrimEnd('/');
+        Sonarr ??= new SonarrConfig();
+        Radarr ??= new RadarrConfig();
+        foreach (var arr in new ArrConfig[] { Sonarr, Radarr })
+        {
+            arr.TimeoutSeconds = Math.Clamp(arr.TimeoutSeconds, 2, 30);
+            arr.BaseUrl = arr.BaseUrl.TrimEnd('/');
+        }
         if (LegacyWhisperLive is not null)
         {
             if (LegacyWhisperLive.Enabled) WhisperAsr.Enabled = true;

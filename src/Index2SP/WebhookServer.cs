@@ -431,10 +431,12 @@ public sealed class WebhookServer : IAsyncDisposable
             var projectsTask = sp.GetProjectsAsync(CancellationToken.None);
             var tagsTask = sp.GetTagsAsync(CancellationToken.None);
             var joplinTagsTask = _config.Joplin.Enabled ? FetchJoplinTagsAsync() : null;
+            var homeEntitiesTask = _config.HomeAssistant.Enabled ? FetchHomeEntitiesAsync() : null;
 
             var projects = await projectsTask;
             var tags = await tagsTask;
             var joplinTags = joplinTagsTask is null ? Array.Empty<SpNamedItem>() : await joplinTagsTask;
+            var homeEntities = homeEntitiesTask is null ? Array.Empty<SpNamedItem>() : await homeEntitiesTask;
 
             // Gemini/OpenAI search under their own credential; Ollama has none of its own and
             // falls back to Claude, so it needs the same key Claude itself would.
@@ -450,7 +452,8 @@ public sealed class WebhookServer : IAsyncDisposable
 
             var referenceTime = (recordedAt ?? DateTimeOffset.UtcNow).ToLocalTime();
             var result = await _classifier.ClassifyAsync(
-                transcription, projects, tags, joplinTags, referenceTime, _config.Beeper.Enabled, includeWebSearch, CancellationToken.None);
+                transcription, projects, tags, joplinTags, referenceTime, _config.Beeper.Enabled, includeWebSearch,
+                _config.Sonarr.Enabled || _config.Radarr.Enabled, homeEntities, CancellationToken.None);
             if (result is null) return new AiRoutingResult(null, false);
 
             if (result.ProjectId is not null) taskReq.ProjectId = result.ProjectId;
@@ -513,15 +516,25 @@ public sealed class WebhookServer : IAsyncDisposable
             if (result.IsWebSearch && includeWebSearch && result.WebSearchQuery is not null)
                 webSearchSent = await RunWebSearchAndSendAsync(result.WebSearchQuery);
 
+            string? mediaReceipt = null;
+            if (result.MediaKind is not null && result.MediaTitle is not null)
+                mediaReceipt = await AddMediaAsync(result.MediaKind, result.MediaTitle);
+
+            string? homeReceipt = null;
+            if (result.HomeAction is not null && result.HomeEntityIds is { Count: > 0 })
+                homeReceipt = await CallHomeAssistantAsync(result.HomeAction, result.HomeEntityIds, homeEntities);
+
             if (!result.IsShopping)
             {
                 // Skip the Super Productivity task only when routing elsewhere actually worked —
                 // a failed/disabled destination still falls back to the normal SP task below.
-                var skip = _config.AiClassifier.ExclusiveRouting && (joplinSent || calendarCreated || messageSent || webSearchSent);
+                var skip = _config.AiClassifier.ExclusiveRouting && (joplinSent || calendarCreated || messageSent || webSearchSent || mediaReceipt is not null || homeReceipt is not null);
                 // Names only a destination that actually succeeded (priority matters when several
                 // fired); null leaves the receipt to the Super Productivity task fallback.
                 var captureKind = webSearchSent ? "Web Search Sent"
                     : messageSent ? "Message Sent"
+                    : mediaReceipt is not null ? mediaReceipt
+                    : homeReceipt is not null ? homeReceipt
                     : calendarCreated ? "Event Created"
                     : joplinSent ? "Note Created"
                     : null;
@@ -603,6 +616,101 @@ public sealed class WebhookServer : IAsyncDisposable
         {
             _log.Warn($"Could not create Google Calendar event: {ex.Message}");
             return false;
+        }
+    }
+
+    private async Task<IReadOnlyList<SpNamedItem>> FetchHomeEntitiesAsync()
+    {
+        try
+        {
+            using var ha = new HomeAssistantClient(_config.HomeAssistant);
+            return await ha.GetEntitiesAsync(CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is HomeAssistantApiException or HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
+        {
+            _log.Warn($"AI classify: couldn't load Home Assistant entities ({ex.Message}) — continuing without them");
+            return Array.Empty<SpNamedItem>();
+        }
+    }
+
+    /// <summary>
+    /// Best-effort device command ("turn off the kitchen lights"). Every entity is called
+    /// separately; counts as success if at least one worked. Returns the receipt text
+    /// ("Turned Off, Kitchen Light, Kitchen Counter") naming only the entities that succeeded, or
+    /// null if none did. Normally additive, but with aiClassifier.exclusiveRouting on a non-null
+    /// result tells the caller to skip the Super Productivity task.
+    /// </summary>
+    private async Task<string?> CallHomeAssistantAsync(string action, List<string> entityIds, IReadOnlyList<SpNamedItem> entities)
+    {
+        var done = new List<string>();
+        try
+        {
+            using var ha = new HomeAssistantClient(_config.HomeAssistant);
+            foreach (var id in entityIds)
+            {
+                try
+                {
+                    await ha.CallAsync(id, action, CancellationToken.None);
+                    done.Add(entities.FirstOrDefault(e => e.Id == id)?.Title ?? id);
+                    _log.Info($"Home Assistant: {action} {id}");
+                }
+                catch (Exception ex) when (ex is HomeAssistantApiException or HttpRequestException or TaskCanceledException)
+                {
+                    _log.Warn($"Home Assistant {action} {id} failed: {ex.Message}");
+                }
+            }
+        }
+        catch (Exception ex) when (ex is UriFormatException or ArgumentException)
+        {
+            _log.Warn($"Home Assistant call skipped: {ex.Message}");
+        }
+
+        if (done.Count == 0) return null;
+        var verb = action switch
+        {
+            "turn_on" => "Turned On",
+            "turn_off" => "Turned Off",
+            "toggle" => "Toggled",
+            "open" => "Opened",
+            _ => "Closed",
+        };
+        return $"{verb}, {string.Join(", ", done)}";
+    }
+
+    /// <summary>
+    /// Best-effort add of a TV show (Sonarr) or movie (Radarr) the classifier heard the user ask
+    /// for. Normally additive — the Super Productivity task is created either way — but with
+    /// aiClassifier.exclusiveRouting on, a true result here tells the caller to skip that task
+    /// instead. Returns the receipt text ("Show Added, Simpsons") or null. A title already in the library counts as success; a disabled integration, no
+    /// match, or any API failure is just logged.
+    /// </summary>
+    private async Task<string?> AddMediaAsync(string kind, string title)
+    {
+        var series = kind == "series";
+        var cfg = series ? (AppConfig.ArrConfig)_config.Sonarr : _config.Radarr;
+        if (!cfg.Enabled) return null;
+
+        try
+        {
+            using var arr = new ArrClient(cfg, series ? ArrClient.Kind.Series : ArrClient.Kind.Movie);
+            var added = await arr.AddAsync(title, CancellationToken.None);
+            if (added is null)
+            {
+                _log.Warn($"{(series ? "Sonarr" : "Radarr")}: no match found for \"{title}\"");
+                return null;
+            }
+
+            var label = added.Year is null ? added.Title : $"{added.Title} ({added.Year})";
+            _log.Info(added.AlreadyInLibrary
+                ? $"{(series ? "Sonarr" : "Radarr")}: \"{label}\" is already in the library"
+                : $"Added to {(series ? "Sonarr" : "Radarr")}: \"{label}\"");
+            // Names the title Sonarr/Radarr actually matched, not the spoken one.
+            return $"{(series ? "Show" : "Movie")} {(added.AlreadyInLibrary ? "Already In Library" : "Added")}, {added.Title}";
+        }
+        catch (Exception ex) when (ex is ArrApiException or HttpRequestException or TaskCanceledException)
+        {
+            _log.Warn($"Could not add \"{title}\" to {(series ? "Sonarr" : "Radarr")}: {ex.Message}");
+            return null;
         }
     }
 

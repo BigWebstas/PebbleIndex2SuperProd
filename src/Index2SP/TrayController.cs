@@ -242,6 +242,9 @@ public sealed class TrayController : IDisposable
         menu.Add(new NativeMenuItem(IntegrationTitle("Joplin notes", _config.Joplin.Enabled, _joplinHealth)) { Menu = BuildJoplinSubmenu() });
         menu.Add(new NativeMenuItem(IntegrationTitle("Google Calendar", _config.GoogleCalendar.Enabled, _googleHealth)) { Menu = BuildGoogleCalendarSubmenu() });
         menu.Add(new NativeMenuItem(IntegrationTitle("Beeper messages", _config.Beeper.Enabled, _beeperHealth)) { Menu = BuildBeeperSubmenu() });
+        menu.Add(new NativeMenuItem(_config.HomeAssistant.Enabled ? "Home Assistant  ·  on" : "Home Assistant") { Menu = BuildHomeAssistantSubmenu() });
+        menu.Add(new NativeMenuItem(_config.Sonarr.Enabled ? "Sonarr  ·  on" : "Sonarr") { Menu = BuildArrSubmenu("Sonarr", _config.Sonarr, ArrClient.Kind.Series) });
+        menu.Add(new NativeMenuItem(_config.Radarr.Enabled ? "Radarr  ·  on" : "Radarr") { Menu = BuildArrSubmenu("Radarr", _config.Radarr, ArrClient.Kind.Movie) });
         menu.Add(new NativeMenuItem(IntegrationTitle("Telegram bot", _config.Telegram.Enabled, _telegramHealth)) { Menu = BuildTelegramSubmenu() });
         menu.Add(new NativeMenuItem(IntegrationTitle("Whisper transcription", _config.WhisperAsr.Enabled, _whisperAsrHealth)) { Menu = BuildWhisperAsrSubmenu() });
         menu.Add(new NativeMenuItem(FeatureTitle("Web search", _config.WebSearch.Enabled)) { Menu = BuildWebSearchSubmenu() });
@@ -1046,6 +1049,106 @@ public sealed class TrayController : IDisposable
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.ApiToken) ? "No API token set" : "API token is set"));
         m.Add(Disabled("Sends only when the recipient's name matches exactly one existing chat"));
         return m;
+    }
+
+    private NativeMenu BuildArrSubmenu(string name, AppConfig.ArrConfig cfg, ArrClient.Kind kind)
+    {
+        var m = new NativeMenu();
+
+        var enabled = new NativeMenuItem("Enabled")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = cfg.Enabled,
+        };
+        enabled.Click += (_, _) =>
+        {
+            cfg.Enabled = !cfg.Enabled;
+            SaveConfig($"{name} {(cfg.Enabled ? "enabled" : "disabled")}");
+        };
+        m.Add(enabled);
+
+        m.Add(Action("Set URL…", () => _ = SetIntegrationValueAsync(name, "URL", masked: false, v => cfg.BaseUrl = v.TrimEnd('/'))));
+        m.Add(Action(string.IsNullOrWhiteSpace(cfg.ApiKey) ? "Set API key…" : "Change API key…",
+            () => _ = SetIntegrationValueAsync(name, "API key", masked: true, v => cfg.ApiKey = v)));
+        m.Add(Action($"Test {name} connection", () => _ = TestArrAsync(name, cfg, kind)));
+        m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.ApiKey) ? "No API key set" : "API key is set"));
+        m.Add(Disabled(kind == ArrClient.Kind.Series
+            ? "Adds the first match for a spoken show title, monitored and searched"
+            : "Adds the first match for a spoken movie title, monitored and searched"));
+        return m;
+    }
+
+    private NativeMenu BuildHomeAssistantSubmenu()
+    {
+        var m = new NativeMenu();
+        var cfg = _config.HomeAssistant;
+
+        var enabled = new NativeMenuItem("Enabled")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = cfg.Enabled,
+        };
+        enabled.Click += (_, _) =>
+        {
+            cfg.Enabled = !cfg.Enabled;
+            SaveConfig($"Home Assistant {(cfg.Enabled ? "enabled" : "disabled")}");
+        };
+        m.Add(enabled);
+
+        m.Add(Action("Set URL…", () => _ = SetIntegrationValueAsync("Home Assistant", "URL", masked: false, v => cfg.BaseUrl = v.TrimEnd('/'))));
+        m.Add(Action(string.IsNullOrWhiteSpace(cfg.AccessToken) ? "Set access token…" : "Change access token…",
+            () => _ = SetIntegrationValueAsync("Home Assistant", "access token", masked: true, v => cfg.AccessToken = v)));
+        m.Add(Action("Test Home Assistant connection", () => _ = TestHomeAssistantAsync()));
+        m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.AccessToken) ? "No access token set" : "Access token is set"));
+        m.Add(Disabled("Lights, switches, fans, covers, scenes and scripts only"));
+        return m;
+    }
+
+    private async Task TestHomeAssistantAsync()
+    {
+        var cfg = _config.HomeAssistant;
+        if (string.IsNullOrWhiteSpace(cfg.AccessToken))
+        {
+            Notify("Home Assistant", "No access token set — nothing to test.", NotifyKind.Error, force: true);
+            return;
+        }
+
+        try
+        {
+            using var ha = new HomeAssistantClient(cfg);
+            Notify("Home Assistant", await ha.TestAsync(), NotifyKind.Info, force: true);
+        }
+        catch (Exception ex) when (ex is HomeAssistantApiException or HttpRequestException or TaskCanceledException)
+        {
+            Notify("Home Assistant — not reachable", ex.Message, NotifyKind.Error, force: true);
+        }
+    }
+
+    private async Task SetIntegrationValueAsync(string name, string what, bool masked, Action<string> apply)
+    {
+        var value = await InputDialog.ShowAsync($"{name} {what}", $"Enter the {name} {what}.", masked);
+        if (string.IsNullOrWhiteSpace(value)) return;
+        apply(value.Trim());
+        SaveConfig($"{name} {what} updated");
+    }
+
+    private async Task TestArrAsync(string name, AppConfig.ArrConfig cfg, ArrClient.Kind kind)
+    {
+        if (string.IsNullOrWhiteSpace(cfg.ApiKey))
+        {
+            Notify(name, "No API key set — nothing to test.", NotifyKind.Error, force: true);
+            return;
+        }
+
+        try
+        {
+            using var arr = new ArrClient(cfg, kind);
+            Notify(name, await arr.TestAsync(), NotifyKind.Info, force: true);
+        }
+        catch (Exception ex) when (ex is ArrApiException or HttpRequestException or TaskCanceledException)
+        {
+            Notify($"{name} — not reachable", ex.Message, NotifyKind.Error, force: true);
+        }
     }
 
     private NativeMenu BuildTelegramSubmenu()

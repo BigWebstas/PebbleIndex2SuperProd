@@ -94,6 +94,14 @@ Two setups need an extra step first:
 - **Beeper** — create a personal access token in Beeper Desktop's API settings, paste it in.
   Naming a platform ("text Abbie on Telegram") picks that chat when the recipient has several;
   with no platform named, it only sends when the recipient matches exactly one chat.
+- **Home Assistant** — create a long-lived access token (your profile → Security) and paste it
+  in with your HA URL. "Turn off the kitchen lights" is matched against your light/switch/fan/
+  cover/scene/script entities (nothing else — no locks or alarms) and each match is called.
+  The receipt names what actually worked ("Turned Off, Kitchen Light").
+- **Sonarr / Radarr** — paste each app's URL and API key (Settings → General) in the tray. "Add
+  Severance to Sonarr" or "get me the movie Dune" adds the first match, monitored and searched,
+  to the first root folder and quality profile (override both in `config.json`). A title already
+  in the library counts as done. Treated like a note/event/message for **Route to one destination only**.
 - **Telegram** — message [@BotFather](https://t.me/BotFather) to create a bot and get a token,
   paste it into the tray. For each destination chat, message the bot from it once, then check
   the bot's `getUpdates` response (or ask [@userinfobot](https://t.me/userinfobot)) for that

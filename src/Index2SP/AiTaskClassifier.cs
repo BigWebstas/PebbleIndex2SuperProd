@@ -38,7 +38,8 @@ public sealed class AiTaskClassifier : IDisposable
         string? ProjectId, List<string> TagIds, string? TaskTitle, bool IsNote, bool IsShopping, List<string> ShoppingItems,
         List<string> JoplinTagIds, bool IsCalendarEvent, string? EventTitle, DateTimeOffset? EventStart, DateTimeOffset? EventEnd,
         bool EventAllDay, bool IsMessage, string? MessageRecipient, string? MessageText, string? MessagePlatform,
-        bool IsWebSearch, string? WebSearchQuery, string? ShoppingMerchant, int? Priority);
+        bool IsWebSearch, string? WebSearchQuery, string? ShoppingMerchant, int? Priority, string? MediaKind = null,
+        string? MediaTitle = null, string? HomeAction = null, List<string>? HomeEntityIds = null);
 
     /// <param name="joplinTags">Existing Joplin tags, only consulted (and only asked of the AI)
     /// while <see cref="AppConfig.AiClassifierConfig.RequireTags"/> is on. Pass an empty list
@@ -50,6 +51,11 @@ public sealed class AiTaskClassifier : IDisposable
     /// at all — pass the caller's Beeper enabled flag.</param>
     /// <param name="includeWebSearch">Whether to ask the AI to detect a "search the web for X"
     /// intent at all — pass the caller's web search + Beeper enabled flag.</param>
+    /// <param name="homeEntities">Controllable Home Assistant entities; when non-empty the AI is
+    /// also asked to detect a device command and pick from these. Pass an empty list when Home
+    /// Assistant isn't enabled.</param>
+    /// <param name="includeMedia">Whether to ask the AI to detect an "add this TV show / movie"
+    /// intent at all — pass the caller's Sonarr / Radarr enabled flag.</param>
     public async Task<Classification?> ClassifyAsync(
         string transcription,
         IReadOnlyList<SpNamedItem> projects,
@@ -58,14 +64,16 @@ public sealed class AiTaskClassifier : IDisposable
         DateTimeOffset referenceTime,
         bool includeMessage,
         bool includeWebSearch,
+        bool includeMedia,
+        IReadOnlyList<SpNamedItem> homeEntities,
         CancellationToken ct)
     {
         if (!_config.Enabled) return null;
         if (projects.Count == 0 && tags.Count == 0) return null;
 
         var requireTags = _config.RequireTags;
-        var fields = BuildFieldSpecs(requireTags, includeMessage, includeWebSearch);
-        var prompt = BuildPrompt(transcription, projects, tags, joplinTags, requireTags, referenceTime, includeMessage, includeWebSearch);
+        var fields = BuildFieldSpecs(requireTags, includeMessage, includeWebSearch, includeMedia, homeEntities.Count > 0);
+        var prompt = BuildPrompt(transcription, projects, tags, joplinTags, requireTags, referenceTime, includeMessage, includeWebSearch, includeMedia, homeEntities);
 
         var primary = _config.Provider;
         var args = await TryClassifyWithProviderAsync(primary, prompt, fields, ct);
@@ -86,7 +94,7 @@ public sealed class AiTaskClassifier : IDisposable
             return null;
         }
 
-        return BuildClassification(args, projects, tags, joplinTags, requireTags, includeMessage, includeWebSearch);
+        return BuildClassification(args, projects, tags, joplinTags, requireTags, includeMessage, includeWebSearch, includeMedia, homeEntities);
     }
 
     /// <summary>One provider attempt: null on any failure (no credential, network, timeout,
@@ -649,7 +657,7 @@ public sealed class AiTaskClassifier : IDisposable
 
     private const string ClassifyToolName = "classify";
 
-    private static List<FieldSpec> BuildFieldSpecs(bool requireTags, bool includeMessage, bool includeWebSearch)
+    private static List<FieldSpec> BuildFieldSpecs(bool requireTags, bool includeMessage, bool includeWebSearch, bool includeMedia, bool includeHome)
     {
         var fields = new List<FieldSpec>
         {
@@ -736,6 +744,28 @@ public sealed class AiTaskClassifier : IDisposable
                 "just the search query itself, stripped of phrasing like \"search the web for\" or " +
                 "\"google\" — e.g. \"latest stable Rust version\" from \"search the web for the latest " +
                 "stable Rust version\". Null otherwise."));
+        }
+
+        if (includeMedia)
+        {
+            fields.Add(new("mediaKind", FieldKind.StringOrNull, "\"series\" if this is a request to add a TV " +
+                "show / series to the library (e.g. \"add Severance to Sonarr\", \"download the show Andor\"), " +
+                "\"movie\" if it is a request to add a movie (e.g. \"get me the movie Dune Part Two\", \"add " +
+                "Alien to Radarr\"). Null for anything else, including merely mentioning or recommending a title."));
+            fields.Add(new("mediaTitle", FieldKind.StringOrNull, "Required when mediaKind is set: just the " +
+                "show or movie title, stripped of phrasing like \"add\" or \"to Sonarr\" — e.g. \"Severance\". " +
+                "Null otherwise."));
+        }
+
+        if (includeHome)
+        {
+            fields.Add(new("homeAction", FieldKind.StringOrNull, "One of " + string.Join(", ", HomeAssistantClient.Actions) +
+                " if this is a command to control a device right now — e.g. \"turn off the kitchen lights\" is " +
+                "turn_off, \"open the garage\" is open, \"activate movie night\" is turn_on. Null for anything else, " +
+                "including a to-do that merely mentions a device (\"buy new lights\")."));
+            fields.Add(new("homeEntityIds", FieldKind.StringArray, "Required when homeAction is set: ids from the " +
+                "Home Assistant entities list below that the command refers to (e.g. every light in the kitchen). " +
+                "Only ids that appear in the list. [] otherwise."));
         }
 
         return fields;
@@ -832,7 +862,8 @@ public sealed class AiTaskClassifier : IDisposable
 
     private Classification BuildClassification(
         IReadOnlyDictionary<string, JsonElement> input, IReadOnlyList<SpNamedItem> projects, IReadOnlyList<SpNamedItem> tags,
-        IReadOnlyList<SpNamedItem> joplinTags, bool requireTags, bool includeMessage, bool includeWebSearch)
+        IReadOnlyList<SpNamedItem> joplinTags, bool requireTags, bool includeMessage, bool includeWebSearch, bool includeMedia,
+        IReadOnlyList<SpNamedItem> homeEntities)
     {
         var projectId = input.TryGetValue("projectId", out var pEl) && pEl.ValueKind == JsonValueKind.String ? pEl.GetString() : null;
         var taskTitle = input.TryGetValue("taskTitle", out var ttEl) && ttEl.ValueKind == JsonValueKind.String
@@ -900,6 +931,35 @@ public sealed class AiTaskClassifier : IDisposable
                 isWebSearch = false;
         }
 
+        string? mediaKind = null;
+        string? mediaTitle = null;
+        if (includeMedia)
+        {
+            mediaKind = input.TryGetValue("mediaKind", out var mkEl) && mkEl.ValueKind == JsonValueKind.String
+                ? mkEl.GetString()?.Trim().ToLowerInvariant()
+                : null;
+            mediaTitle = input.TryGetValue("mediaTitle", out var mtlEl) && mtlEl.ValueKind == JsonValueKind.String
+                ? mtlEl.GetString()?.Trim()
+                : null;
+            // Needs a recognised kind and an actual title to be usable.
+            if (mediaKind is not ("series" or "movie") || string.IsNullOrWhiteSpace(mediaTitle))
+                mediaKind = mediaTitle = null;
+        }
+
+        string? homeAction = null;
+        var homeEntityIds = new List<string>();
+        if (homeEntities.Count > 0)
+        {
+            homeAction = input.TryGetValue("homeAction", out var haEl) && haEl.ValueKind == JsonValueKind.String
+                ? haEl.GetString()?.Trim().ToLowerInvariant()
+                : null;
+            // Only ids really in the list, and only combinations Home Assistant allows for them.
+            homeEntityIds = ReadStringArray(input, "homeEntityIds")
+                .Where(id => homeEntities.Any(e => e.Id == id) && homeAction is not null && HomeAssistantClient.IsAllowed(id, homeAction))
+                .Distinct().ToList();
+            if (homeEntityIds.Count == 0) homeAction = null;
+        }
+
         var resolvedProjectId = projectId is not null && projects.Any(p => p.Id == projectId) ? projectId : null;
         var resolvedTagIds = tagIds.Where(t => tags.Any(x => x.Id == t)).ToList();
         var resolvedJoplinTagIds = joplinTagIds.Where(t => joplinTags.Any(x => x.Id == t)).ToList();
@@ -910,11 +970,13 @@ public sealed class AiTaskClassifier : IDisposable
                   $", joplinTags=[{string.Join(',', resolvedJoplinTagIds)}], " +
                   $"isCalendarEvent={isCalendarEvent}" + (isCalendarEvent ? $", eventStart={eventStart:O}" : "") +
                   $", isMessage={isMessage}" + (isMessage ? $", messageRecipient={messageRecipient}, messagePlatform={messagePlatform ?? "(any)"}" : "") +
-                  $", isWebSearch={isWebSearch}" + (isWebSearch ? $", webSearchQuery={webSearchQuery}" : ""));
+                  $", isWebSearch={isWebSearch}" + (isWebSearch ? $", webSearchQuery={webSearchQuery}" : "") +
+                  (mediaKind is not null ? $", media={mediaKind}:{mediaTitle}" : "") +
+                  (homeAction is not null ? $", home={homeAction}:[{string.Join(',', homeEntityIds)}]" : ""));
 
         return new Classification(resolvedProjectId, resolvedTagIds, taskTitle, isNote, isShopping, shoppingItems, resolvedJoplinTagIds,
             isCalendarEvent, eventTitle, eventStart, eventEnd, eventAllDay, isMessage, messageRecipient, messageText, messagePlatform,
-            isWebSearch, webSearchQuery, shoppingMerchant, priority);
+            isWebSearch, webSearchQuery, shoppingMerchant, priority, mediaKind, mediaTitle, homeAction, homeEntityIds);
     }
 
     private static DateTimeOffset? ReadDateTimeOffset(IReadOnlyDictionary<string, JsonElement> input, string key)
@@ -942,7 +1004,7 @@ public sealed class AiTaskClassifier : IDisposable
     private static string BuildPrompt(
         string transcription, IReadOnlyList<SpNamedItem> projects, IReadOnlyList<SpNamedItem> tags,
         IReadOnlyList<SpNamedItem> joplinTags, bool requireTags, DateTimeOffset referenceTime, bool includeMessage,
-        bool includeWebSearch)
+        bool includeWebSearch, bool includeMedia, IReadOnlyList<SpNamedItem> homeEntities)
     {
         var sb = new StringBuilder();
         sb.Append("You are filing a voice-note transcription into Super Productivity. ");
@@ -992,6 +1054,16 @@ public sealed class AiTaskClassifier : IDisposable
                       "now (e.g. \"search the web for\", \"google\", \"what is the latest version of X\") " +
                       "and set isWebSearch and webSearchQuery accordingly (see their descriptions).\n");
 
+        if (includeMedia)
+            sb.Append("Also decide whether this is a request to add a TV show or a movie to the media " +
+                      "library (e.g. \"add Severance to Sonarr\", \"get me the movie Dune\") and set " +
+                      "mediaKind and mediaTitle accordingly (see their descriptions).\n");
+
+        if (homeEntities.Count > 0)
+            sb.Append("Also decide whether this is a command to control a smart-home device right now " +
+                      "(e.g. \"turn off the kitchen lights\") and set homeAction and homeEntityIds accordingly " +
+                      "(see their descriptions).\n");
+
         sb.Append('\n');
         sb.Append("Projects:\n");
         if (projects.Count == 0) sb.Append("(none)\n");
@@ -1006,6 +1078,12 @@ public sealed class AiTaskClassifier : IDisposable
             sb.Append("\nJoplin tags:\n");
             if (joplinTags.Count == 0) sb.Append("(none)\n");
             foreach (var t in joplinTags) sb.Append("- ").Append(t.Id).Append(": ").Append(t.Title).Append('\n');
+        }
+
+        if (homeEntities.Count > 0)
+        {
+            sb.Append("\nHome Assistant entities:\n");
+            foreach (var e in homeEntities) sb.Append("- ").Append(e.Id).Append(": ").Append(e.Title).Append('\n');
         }
 
         sb.Append("\nTranscription:\n").Append(transcription);
