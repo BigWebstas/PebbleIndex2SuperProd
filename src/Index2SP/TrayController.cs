@@ -317,6 +317,31 @@ public sealed class TrayController : IDisposable
         };
     }
 
+    /// <summary>Last known health of every enabled service, one per line — the reply to a spoken
+    /// "status" webhook. Uses the cached results of the background checks, so it answers instantly.</summary>
+    private string BuildStatusReport()
+    {
+        var services = new (string Name, bool Enabled, SpHealth Health)[]
+        {
+            ("Super Productivity", true, _spHealth),
+            ("AI classifier", _config.AiClassifier.Enabled, _aiHealth),
+            ("Joplin", _config.Joplin.Enabled, _joplinHealth),
+            ("Google Calendar", _config.GoogleCalendar.Enabled, _googleHealth),
+            ("Beeper", _config.Beeper.Enabled, _beeperHealth),
+            ("Home Assistant", _config.HomeAssistant.Enabled, _homeAssistantProbe.Health),
+            ("Sonarr", _config.Sonarr.Enabled, _sonarrProbe.Health),
+            ("Radarr", _config.Radarr.Enabled, _radarrProbe.Health),
+            ("Telegram", _config.Telegram.Enabled, _telegramHealth),
+            ("Whisper", _config.WhisperAsr.Enabled, _whisperAsrHealth),
+        };
+        return string.Join("\n", services.Where(s => s.Enabled).Select(s => $"{s.Name}: " + s.Health switch
+        {
+            SpHealth.Ok => "OK",
+            SpHealth.Unreachable => "Unreachable",
+            _ => "Not checked yet",
+        }));
+    }
+
     private static string FeatureTitle(string name, bool enabled) =>
         enabled ? name : $"{name} (Disabled)";
 
@@ -1343,6 +1368,7 @@ public sealed class TrayController : IDisposable
             _server.WebhookFailed += OnWebhookFailed;
             _server.TaskQueued += OnTaskQueued;
             _server.TestEventReceived += OnTestEventReceived;
+            _server.StatusReport = BuildStatusReport;
             await _server.StartAsync();
             RefreshTray();
             if (!initial) Notify("Listener started", StatusLine(), NotifyKind.Info);

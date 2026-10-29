@@ -60,6 +60,20 @@ public sealed class WebhookServer : IAsyncDisposable
     /// <summary>Raised on the thread pool for a Pebble connectivity-test webhook (no task created).</summary>
     public event Action<string>? TestEventReceived;      // (remote)
 
+    /// <summary>Supplies the "service: state" lines for a spoken status request (set by the tray,
+    /// which owns the health checks). Null disables status requests.</summary>
+    public Func<string>? StatusReport { get; set; }
+
+    /// <summary>A short utterance containing "status" — "status", "what's the status", "service
+    /// status". Capped at six words so a task like "check the order status with the bank today"
+    /// still becomes a task.</summary>
+    internal static bool IsStatusRequest(string? transcription)
+    {
+        if (string.IsNullOrWhiteSpace(transcription)) return false;
+        var words = transcription.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        return words.Length <= 6 && words.Any(w => w.Trim('.', ',', '?', '!', '\'', '"').EndsWith("status", StringComparison.OrdinalIgnoreCase));
+    }
+
     /// <summary>A port still held by a previous instance (a quick restart) usually frees up within
     /// seconds, so binding is retried a few times before giving up.</summary>
     private const int BindAttempts = 5;
@@ -365,6 +379,13 @@ public sealed class WebhookServer : IAsyncDisposable
             _log.Info($"Connectivity-test webhook from {remote} — notifying, no task created");
             TestEventReceived?.Invoke(remote);
             return Results.Json(new { ok = true, data = new { test = true, message = "test event received" } });
+        }
+
+        if (StatusReport is { } statusReport && IsStatusRequest(payload.Transcription))
+        {
+            _log.Info($"Status request from {remote} — replying with service status, no task created");
+            await SendWebhookReceiptAsync($"Status\n{statusReport()}");
+            return Results.Json(new { ok = true, data = new { status = true } });
         }
 
         SpTaskRequest taskReq;

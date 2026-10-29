@@ -117,6 +117,10 @@ Two setups need an extra step first:
   "will it rain tomorrow?" and the receipt carries the answer: `Webhook Received, Question, Yes it
   will rain tomorrow`. Answers use the same live web search as **Web search**; "search the web
   for X" still goes to the Web search chat instead.
+- **Status** — needs **Webhook receipt**. Say "status", "what's the status" or "service status"
+  (six words or fewer) and the receipt lists every enabled service as OK / Unreachable
+  (`Webhook Received, Status` then one line per service). No task is created, and it works
+  without the AI classifier. Uses the tray's latest health check, so it's instant.
 - **Telegram** — message [@BotFather](https://t.me/BotFather) to create a bot and get a token,
   paste it into the tray. For each destination chat, message the bot from it once, then check
   the bot's `getUpdates` response (or ask [@userinfobot](https://t.me/userinfobot)) for that
