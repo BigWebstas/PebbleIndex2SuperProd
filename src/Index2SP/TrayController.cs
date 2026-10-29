@@ -52,6 +52,18 @@ public sealed class TrayController : IDisposable
     private int _beeperFailureStreak;
     private bool _beeperHealthCheckInFlight;
 
+    /// <summary>Health state for an integration whose probe goes through <see cref="RunProbeAsync"/>.</summary>
+    private sealed class Probe
+    {
+        public SpHealth Health = SpHealth.Unknown;
+        public int FailureStreak;
+        public bool InFlight;
+    }
+
+    private readonly Probe _homeAssistantProbe = new();
+    private readonly Probe _sonarrProbe = new();
+    private readonly Probe _radarrProbe = new();
+
     private SpHealth _telegramHealth = SpHealth.Unknown;
     private int _telegramFailureStreak;
     private bool _telegramHealthCheckInFlight;
@@ -155,6 +167,9 @@ public sealed class TrayController : IDisposable
                 RunJoplinHealthCheckAsync(manual: false),
                 RunGoogleCalendarHealthCheckAsync(manual: false),
                 RunBeeperHealthCheckAsync(manual: false),
+                RunHomeAssistantHealthCheckAsync(manual: false),
+                RunSonarrHealthCheckAsync(manual: false),
+                RunRadarrHealthCheckAsync(manual: false),
                 RunTelegramHealthCheckAsync(manual: false),
                 RunAiHealthCheckAsync(manual: false),
                 RunWhisperAsrHealthCheckAsync(manual: false));
@@ -242,9 +257,9 @@ public sealed class TrayController : IDisposable
         menu.Add(new NativeMenuItem(IntegrationTitle("Joplin notes", _config.Joplin.Enabled, _joplinHealth)) { Menu = BuildJoplinSubmenu() });
         menu.Add(new NativeMenuItem(IntegrationTitle("Google Calendar", _config.GoogleCalendar.Enabled, _googleHealth)) { Menu = BuildGoogleCalendarSubmenu() });
         menu.Add(new NativeMenuItem(IntegrationTitle("Beeper messages", _config.Beeper.Enabled, _beeperHealth)) { Menu = BuildBeeperSubmenu() });
-        menu.Add(new NativeMenuItem(_config.HomeAssistant.Enabled ? "Home Assistant  ·  on" : "Home Assistant") { Menu = BuildHomeAssistantSubmenu() });
-        menu.Add(new NativeMenuItem(_config.Sonarr.Enabled ? "Sonarr  ·  on" : "Sonarr") { Menu = BuildArrSubmenu("Sonarr", _config.Sonarr, ArrClient.Kind.Series) });
-        menu.Add(new NativeMenuItem(_config.Radarr.Enabled ? "Radarr  ·  on" : "Radarr") { Menu = BuildArrSubmenu("Radarr", _config.Radarr, ArrClient.Kind.Movie) });
+        menu.Add(new NativeMenuItem(IntegrationTitle("Home Assistant", _config.HomeAssistant.Enabled, _homeAssistantProbe.Health)) { Menu = BuildHomeAssistantSubmenu() });
+        menu.Add(new NativeMenuItem(IntegrationTitle("Sonarr", _config.Sonarr.Enabled, _sonarrProbe.Health)) { Menu = BuildArrSubmenu("Sonarr", _config.Sonarr, ArrClient.Kind.Series) });
+        menu.Add(new NativeMenuItem(IntegrationTitle("Radarr", _config.Radarr.Enabled, _radarrProbe.Health)) { Menu = BuildArrSubmenu("Radarr", _config.Radarr, ArrClient.Kind.Movie) });
         menu.Add(new NativeMenuItem(IntegrationTitle("Telegram bot", _config.Telegram.Enabled, _telegramHealth)) { Menu = BuildTelegramSubmenu() });
         menu.Add(new NativeMenuItem(IntegrationTitle("Whisper transcription", _config.WhisperAsr.Enabled, _whisperAsrHealth)) { Menu = BuildWhisperAsrSubmenu() });
         menu.Add(new NativeMenuItem(FeatureTitle("Web search", _config.WebSearch.Enabled)) { Menu = BuildWebSearchSubmenu() });
@@ -1070,7 +1085,7 @@ public sealed class TrayController : IDisposable
         m.Add(Action("Set URL…", () => _ = SetIntegrationValueAsync(name, "URL", masked: false, v => cfg.BaseUrl = v.TrimEnd('/'))));
         m.Add(Action(string.IsNullOrWhiteSpace(cfg.ApiKey) ? "Set API key…" : "Change API key…",
             () => _ = SetIntegrationValueAsync(name, "API key", masked: true, v => cfg.ApiKey = v)));
-        m.Add(Action($"Test {name} connection", () => _ = TestArrAsync(name, cfg, kind)));
+        m.Add(Action($"Test {name} connection", () => _ = kind == ArrClient.Kind.Series ? RunSonarrHealthCheckAsync(manual: true) : RunRadarrHealthCheckAsync(manual: true)));
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.ApiKey) ? "No API key set" : "API key is set"));
         m.Add(Disabled(kind == ArrClient.Kind.Series
             ? "Adds the first match for a spoken show title, monitored and searched"
@@ -1098,30 +1113,10 @@ public sealed class TrayController : IDisposable
         m.Add(Action("Set URL…", () => _ = SetIntegrationValueAsync("Home Assistant", "URL", masked: false, v => cfg.BaseUrl = v.TrimEnd('/'))));
         m.Add(Action(string.IsNullOrWhiteSpace(cfg.AccessToken) ? "Set access token…" : "Change access token…",
             () => _ = SetIntegrationValueAsync("Home Assistant", "access token", masked: true, v => cfg.AccessToken = v)));
-        m.Add(Action("Test Home Assistant connection", () => _ = TestHomeAssistantAsync()));
+        m.Add(Action("Test Home Assistant connection", () => _ = RunHomeAssistantHealthCheckAsync(manual: true)));
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.AccessToken) ? "No access token set" : "Access token is set"));
         m.Add(Disabled("Lights, switches, fans, covers, scenes and scripts only"));
         return m;
-    }
-
-    private async Task TestHomeAssistantAsync()
-    {
-        var cfg = _config.HomeAssistant;
-        if (string.IsNullOrWhiteSpace(cfg.AccessToken))
-        {
-            Notify("Home Assistant", "No access token set — nothing to test.", NotifyKind.Error, force: true);
-            return;
-        }
-
-        try
-        {
-            using var ha = new HomeAssistantClient(cfg);
-            Notify("Home Assistant", await ha.TestAsync(), NotifyKind.Info, force: true);
-        }
-        catch (Exception ex) when (ex is HomeAssistantApiException or HttpRequestException or TaskCanceledException)
-        {
-            Notify("Home Assistant — not reachable", ex.Message, NotifyKind.Error, force: true);
-        }
     }
 
     private async Task SetIntegrationValueAsync(string name, string what, bool masked, Action<string> apply)
@@ -1130,25 +1125,6 @@ public sealed class TrayController : IDisposable
         if (string.IsNullOrWhiteSpace(value)) return;
         apply(value.Trim());
         SaveConfig($"{name} {what} updated");
-    }
-
-    private async Task TestArrAsync(string name, AppConfig.ArrConfig cfg, ArrClient.Kind kind)
-    {
-        if (string.IsNullOrWhiteSpace(cfg.ApiKey))
-        {
-            Notify(name, "No API key set — nothing to test.", NotifyKind.Error, force: true);
-            return;
-        }
-
-        try
-        {
-            using var arr = new ArrClient(cfg, kind);
-            Notify(name, await arr.TestAsync(), NotifyKind.Info, force: true);
-        }
-        catch (Exception ex) when (ex is ArrApiException or HttpRequestException or TaskCanceledException)
-        {
-            Notify($"{name} — not reachable", ex.Message, NotifyKind.Error, force: true);
-        }
     }
 
     private NativeMenu BuildTelegramSubmenu()
@@ -1440,6 +1416,11 @@ public sealed class TrayController : IDisposable
             _joplinHealth = SpHealth.Unknown;
             _googleHealth = SpHealth.Unknown;
             _beeperHealth = SpHealth.Unknown;
+            foreach (var probe in new[] { _homeAssistantProbe, _sonarrProbe, _radarrProbe })
+            {
+                probe.Health = SpHealth.Unknown;
+                probe.FailureStreak = 0;
+            }
             _telegramHealth = SpHealth.Unknown;
             _aiHealth = SpHealth.Unknown;
             _whisperAsrHealth = SpHealth.Unknown;
@@ -1699,6 +1680,89 @@ public sealed class TrayController : IDisposable
         finally
         {
             _beeperHealthCheckInFlight = false;
+        }
+    }
+
+    private Task RunHomeAssistantHealthCheckAsync(bool manual) => RunProbeAsync("Home Assistant", _homeAssistantProbe, manual,
+        string.IsNullOrWhiteSpace(_config.HomeAssistant.AccessToken) ? "No access token set — nothing to test." : null,
+        async () =>
+        {
+            using var ha = new HomeAssistantClient(_config.HomeAssistant);
+            return await ha.TestAsync();
+        });
+
+    private Task RunSonarrHealthCheckAsync(bool manual) => RunProbeAsync("Sonarr", _sonarrProbe, manual,
+        string.IsNullOrWhiteSpace(_config.Sonarr.ApiKey) ? "No API key set — nothing to test." : null,
+        async () =>
+        {
+            using var arr = new ArrClient(_config.Sonarr, ArrClient.Kind.Series);
+            return await arr.TestAsync();
+        });
+
+    private Task RunRadarrHealthCheckAsync(bool manual) => RunProbeAsync("Radarr", _radarrProbe, manual,
+        string.IsNullOrWhiteSpace(_config.Radarr.ApiKey) ? "No API key set — nothing to test." : null,
+        async () =>
+        {
+            using var arr = new ArrClient(_config.Radarr, ArrClient.Kind.Movie);
+            return await arr.TestAsync();
+        });
+
+    /// <summary>Same flow as the per-service checks above (state change logging, outage threshold,
+    /// manual pop-up), shared so each new integration only supplies its probe. <paramref name="notConfigured"/>
+    /// non-null means there's no credential yet — nothing is probed.</summary>
+    private async Task RunProbeAsync(string name, Probe probe, bool manual, string? notConfigured, Func<Task<string>> test)
+    {
+        if (notConfigured is not null)
+        {
+            if (manual) Notify(name, notConfigured, NotifyKind.Error, force: true);
+            return;
+        }
+        if (!manual && probe.InFlight) return;
+        probe.InFlight = true;
+        try
+        {
+            SpHealth state;
+            string message;
+            try
+            {
+                message = await test();
+                state = SpHealth.Ok;
+            }
+            catch (Exception ex)
+            {
+                message = ex.Message;
+                state = SpHealth.Unreachable;
+            }
+
+            var prev = probe.Health;
+            probe.Health = state;
+            var outage = CrossedOutageThreshold(state, ref probe.FailureStreak);
+
+            if (state != prev)
+            {
+                if (state == SpHealth.Ok)
+                    _log.Info(prev == SpHealth.Unreachable
+                        ? $"{name} connection restored — {message}"
+                        : $"{name} reachable — {message}");
+                else
+                    _log.Warn($"{name} unreachable — {message}");
+
+                RefreshTray();
+            }
+
+            if (!manual && outage)
+            {
+                Notify($"{name} unreachable", message, NotifyKind.Warning);
+                _ = CreateOutageTaskAsync(name, message);
+            }
+
+            if (manual)
+                Notify(state == SpHealth.Ok ? name : $"{name} — not reachable",
+                    message, state == SpHealth.Ok ? NotifyKind.Info : NotifyKind.Error, force: true);
+        }
+        finally
+        {
+            probe.InFlight = false;
         }
     }
 
@@ -2047,6 +2111,9 @@ public sealed class TrayController : IDisposable
         var joplinEnabled = !string.IsNullOrWhiteSpace(_config.Joplin.AuthToken);
         var googleEnabled = !string.IsNullOrWhiteSpace(_config.GoogleCalendar.RefreshToken);
         var beeperEnabled = !string.IsNullOrWhiteSpace(_config.Beeper.ApiToken);
+        var homeEnabled = !string.IsNullOrWhiteSpace(_config.HomeAssistant.AccessToken);
+        var sonarrEnabled = !string.IsNullOrWhiteSpace(_config.Sonarr.ApiKey);
+        var radarrEnabled = !string.IsNullOrWhiteSpace(_config.Radarr.ApiKey);
 
         // Independent probes — run them together instead of waiting on each in turn.
         await Task.WhenAll(
@@ -2056,7 +2123,10 @@ public sealed class TrayController : IDisposable
             beeperEnabled ? RunBeeperHealthCheckAsync(manual: false) : Task.CompletedTask,
             _config.Telegram.Enabled ? RunTelegramHealthCheckAsync(manual: false) : Task.CompletedTask,
             _config.AiClassifier.Enabled ? RunAiHealthCheckAsync(manual: false) : Task.CompletedTask,
-            _config.WhisperAsr.Enabled ? RunWhisperAsrHealthCheckAsync(manual: false) : Task.CompletedTask);
+            _config.WhisperAsr.Enabled ? RunWhisperAsrHealthCheckAsync(manual: false) : Task.CompletedTask,
+            homeEnabled ? RunHomeAssistantHealthCheckAsync(manual: false) : Task.CompletedTask,
+            sonarrEnabled ? RunSonarrHealthCheckAsync(manual: false) : Task.CompletedTask,
+            radarrEnabled ? RunRadarrHealthCheckAsync(manual: false) : Task.CompletedTask);
 
         var lines = new List<string> { $"Super Productivity: {DescribeHealth(_spHealth)}" };
         var allOk = _spHealth == SpHealth.Ok;
@@ -2077,6 +2147,18 @@ public sealed class TrayController : IDisposable
         {
             lines.Add($"Beeper: {DescribeHealth(_beeperHealth)}");
             allOk &= _beeperHealth == SpHealth.Ok;
+        }
+
+        foreach (var (label, shown, probe) in new[]
+        {
+            ("Home Assistant", homeEnabled, _homeAssistantProbe),
+            ("Sonarr", sonarrEnabled, _sonarrProbe),
+            ("Radarr", radarrEnabled, _radarrProbe),
+        })
+        {
+            if (!shown) continue;
+            lines.Add($"{label}: {DescribeHealth(probe.Health)}");
+            allOk &= probe.Health == SpHealth.Ok;
         }
 
         if (_config.Telegram.Enabled)
