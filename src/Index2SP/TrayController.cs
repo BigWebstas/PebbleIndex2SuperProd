@@ -1350,6 +1350,9 @@ public sealed class TrayController : IDisposable
             _ = RunJoplinHealthCheckAsync(manual: false);
             _ = RunGoogleCalendarHealthCheckAsync(manual: false);
             _ = RunBeeperHealthCheckAsync(manual: false);
+            _ = RunHomeAssistantHealthCheckAsync(manual: false);
+            _ = RunSonarrHealthCheckAsync(manual: false);
+            _ = RunRadarrHealthCheckAsync(manual: false);
             _ = RunTelegramHealthCheckAsync(manual: false);
             _ = RunAiHealthCheckAsync(manual: false);
             _ = RunWhisperAsrHealthCheckAsync(manual: false);
