@@ -102,6 +102,10 @@ Two setups need an extra step first:
   Severance to Sonarr" or "get me the movie Dune" adds the first match, monitored and searched,
   to the first root folder and quality profile (override both in `config.json`). A title already
   in the library counts as done. Treated like a note/event/message for **Route to one destination only**.
+- **Questions** — needs the Telegram bot, **Webhook receipt** and a search-capable AI key. Ask
+  "will it rain tomorrow?" and the receipt carries the answer: `Webhook Received, Question, Yes it
+  will rain tomorrow`. Answers use the same live web search as **Web search**; "search the web
+  for X" still goes to the Web search chat instead.
 - **Telegram** — message [@BotFather](https://t.me/BotFather) to create a bot and get a token,
   paste it into the tray. For each destination chat, message the bot from it once, then check
   the bot's `getUpdates` response (or ask [@userinfobot](https://t.me/userinfobot)) for that

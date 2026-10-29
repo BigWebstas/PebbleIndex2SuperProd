@@ -535,10 +535,14 @@ public sealed class WebhookServer : IAsyncDisposable
                 !string.IsNullOrWhiteSpace(_config.Telegram.BotToken) && !string.IsNullOrWhiteSpace(_config.WebSearch.ChatId) &&
                 hasSearchCredential;
 
+            // Answers go out in the webhook receipt, so that has to be deliverable too.
+            var includeQuestion = _config.Telegram.Enabled && !string.IsNullOrWhiteSpace(_config.Telegram.BotToken) &&
+                _config.WebhookReceipt.Enabled && !string.IsNullOrWhiteSpace(_config.WebhookReceipt.ChatId) && hasSearchCredential;
+
             var referenceTime = (recordedAt ?? DateTimeOffset.UtcNow).ToLocalTime();
             var result = await _classifier.ClassifyAsync(
                 transcription, projects, tags, joplinTags, referenceTime, _config.Beeper.Enabled, includeWebSearch,
-                _config.Sonarr.Enabled || _config.Radarr.Enabled, homeEntities, CancellationToken.None);
+                _config.Sonarr.Enabled || _config.Radarr.Enabled, homeEntities, includeQuestion, CancellationToken.None);
             if (result is null) return new AiRoutingResult(null, false);
 
             if (result.ProjectId is not null) taskReq.ProjectId = result.ProjectId;
@@ -605,6 +609,11 @@ public sealed class WebhookServer : IAsyncDisposable
             if (result.MediaKind is not null && result.MediaTitle is not null)
                 mediaReceipt = await AddMediaAsync(result.MediaKind, result.MediaTitle);
 
+            // A "search the web" request already answered itself above; this is for plain questions.
+            string? questionReceipt = null;
+            if (result.IsQuestion && !webSearchSent && result.QuestionText is not null)
+                questionReceipt = await AnswerQuestionAsync(result.QuestionText);
+
             string? homeReceipt = null;
             if (result.HomeAction is not null && result.HomeEntityIds is { Count: > 0 })
                 homeReceipt = await CallHomeAssistantAsync(result.HomeAction, result.HomeEntityIds, homeEntities);
@@ -613,13 +622,14 @@ public sealed class WebhookServer : IAsyncDisposable
             {
                 // Skip the Super Productivity task only when routing elsewhere actually worked —
                 // a failed/disabled destination still falls back to the normal SP task below.
-                var skip = _config.AiClassifier.ExclusiveRouting && (joplinSent || calendarCreated || messageSent || webSearchSent || mediaReceipt is not null || homeReceipt is not null);
+                var skip = _config.AiClassifier.ExclusiveRouting && (joplinSent || calendarCreated || messageSent || webSearchSent || mediaReceipt is not null || homeReceipt is not null || questionReceipt is not null);
                 // Names only a destination that actually succeeded (priority matters when several
                 // fired); null leaves the receipt to the Super Productivity task fallback.
                 var captureKind = webSearchSent ? "Web Search Sent"
                     : messageSent ? "Message Sent"
                     : mediaReceipt is not null ? mediaReceipt
                     : homeReceipt is not null ? homeReceipt
+                    : questionReceipt is not null ? questionReceipt
                     : calendarCreated ? "Event Created"
                     : joplinSent ? "Note Created"
                     : null;
@@ -702,6 +712,24 @@ public sealed class WebhookServer : IAsyncDisposable
             _log.Warn($"Could not create Google Calendar event: {ex.Message}");
             return false;
         }
+    }
+
+    /// <summary>
+    /// Best-effort answer to a spoken question, using the same search-backed AI call as web search.
+    /// Returns the receipt text ("Question, Yes it will rain tomorrow") or null when no answer came
+    /// back. The answer rides in the webhook receipt itself, so nothing else is sent.
+    /// </summary>
+    private async Task<string?> AnswerQuestionAsync(string question)
+    {
+        var answer = await _classifier.RunWebSearchAsync(question, _config.WebSearch.MaxUses, CancellationToken.None);
+        if (answer is null)
+        {
+            _log.Warn($"Question not answered: no answer for \"{question}\"");
+            return null;
+        }
+
+        _log.Info($"Answered question \"{question}\"");
+        return $"Question, {PayloadConverter.CapTitle(answer, 1000)}";
     }
 
     private async Task<IReadOnlyList<SpNamedItem>> FetchHomeEntitiesAsync()
