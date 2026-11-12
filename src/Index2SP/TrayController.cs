@@ -1663,7 +1663,7 @@ public sealed class TrayController : IDisposable
     }
 
     private Task RunHomeAssistantHealthCheckAsync(bool manual) => RunProbeAsync("Home Assistant", _homeAssistantProbe, manual,
-        string.IsNullOrWhiteSpace(_config.HomeAssistant.AccessToken) ? "No access token set — nothing to test." : null,
+        !_config.HomeAssistant.Enabled ? "Home Assistant is disabled." : string.IsNullOrWhiteSpace(_config.HomeAssistant.AccessToken) ? "No access token set — nothing to test." : null,
         async () =>
         {
             using var ha = new HomeAssistantClient(_config.HomeAssistant);
@@ -1671,7 +1671,7 @@ public sealed class TrayController : IDisposable
         });
 
     private Task RunSonarrHealthCheckAsync(bool manual) => RunProbeAsync("Sonarr", _sonarrProbe, manual,
-        string.IsNullOrWhiteSpace(_config.Sonarr.ApiKey) ? "No API key set — nothing to test." : null,
+        !_config.Sonarr.Enabled ? "Sonarr is disabled." : string.IsNullOrWhiteSpace(_config.Sonarr.ApiKey) ? "No API key set — nothing to test." : null,
         async () =>
         {
             using var arr = new ArrClient(_config.Sonarr, ArrClient.Kind.Series);
@@ -1679,7 +1679,7 @@ public sealed class TrayController : IDisposable
         });
 
     private Task RunRadarrHealthCheckAsync(bool manual) => RunProbeAsync("Radarr", _radarrProbe, manual,
-        string.IsNullOrWhiteSpace(_config.Radarr.ApiKey) ? "No API key set — nothing to test." : null,
+        !_config.Radarr.Enabled ? "Radarr is disabled." : string.IsNullOrWhiteSpace(_config.Radarr.ApiKey) ? "No API key set — nothing to test." : null,
         async () =>
         {
             using var arr = new ArrClient(_config.Radarr, ArrClient.Kind.Movie);
