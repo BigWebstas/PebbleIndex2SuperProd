@@ -225,7 +225,10 @@ public sealed class TrayController : IDisposable
 
         var queued = _outbox.PendingCount;
 
-        menu.Add(Disabled($"Tasks created: {_created}   failed: {_failed}   queued: {queued}   tests: {_tests}"));
+        var counters = $"{_created} created · {_failed} failed";
+        if (queued > 0) counters += $" · {queued} queued";
+        if (_tests > 0) counters += $" · {_tests} tests";
+        menu.Add(Disabled(counters));
         menu.Add(new NativeMenuItemSeparator());
 
         if (_updateAvailable is { } update)
@@ -240,57 +243,41 @@ public sealed class TrayController : IDisposable
                 menu.Add(Action($"⬆ Update available: v{update.Version} — click to download", () => _ = DownloadUpdateAsync(update)));
             else
                 menu.Add(Action($"⬆ Update available: v{update.Version}", () => OpenPath(update.Url)));
-            menu.Add(Action("Open release page", () => OpenPath(update.Url)));
             menu.Add(new NativeMenuItemSeparator());
         }
 
         menu.Add(Action(_server?.IsRunning == true ? "Stop listener" : "Start listener",
             () => _ = ToggleServerAsync()));
         menu.Add(Action("Copy webhook URL", CopyWebhookUrl));
-        menu.Add(Action("Test all connections", () => _ = RunAllConnectionsTestAsync()));
-        menu.Add(Action("Refresh projects, tags & notebooks", () => _ = RefreshListsAsync(notifyOnError: true)));
+        var checkMenu = new NativeMenu();
+        checkMenu.Add(Action("Test all connections", () => _ = RunAllConnectionsTestAsync()));
+        checkMenu.Add(Action("Refresh projects, tags & notebooks", () => _ = RefreshListsAsync(notifyOnError: true)));
+        menu.Add(new NativeMenuItem("Check & refresh") { Menu = checkMenu });
         menu.Add(new NativeMenuItemSeparator());
 
         menu.Add(new NativeMenuItem(SpSubmenuTitle()) { Menu = BuildSuperProductivitySubmenu() });
-        menu.Add(new NativeMenuItem(IntegrationTitle("AI classifier", _config.AiClassifier.Enabled, _aiHealth)) { Menu = BuildAiClassifierSubmenu() });
+        menu.Add(new NativeMenuItemSeparator());
+
+        menu.Add(Disabled("Destinations"));
         menu.Add(new NativeMenuItem(IntegrationTitle("Joplin notes", _config.Joplin.Enabled, _joplinHealth)) { Menu = BuildJoplinSubmenu() });
         menu.Add(new NativeMenuItem(IntegrationTitle("Google Calendar", _config.GoogleCalendar.Enabled, _googleHealth)) { Menu = BuildGoogleCalendarSubmenu() });
         menu.Add(new NativeMenuItem(IntegrationTitle("Beeper messages", _config.Beeper.Enabled, _beeperHealth)) { Menu = BuildBeeperSubmenu() });
         menu.Add(new NativeMenuItem(IntegrationTitle("Home Assistant", _config.HomeAssistant.Enabled, _homeAssistantProbe.Health)) { Menu = BuildHomeAssistantSubmenu() });
         menu.Add(new NativeMenuItem(IntegrationTitle("Sonarr", _config.Sonarr.Enabled, _sonarrProbe.Health)) { Menu = BuildArrSubmenu("Sonarr", _config.Sonarr, ArrClient.Kind.Series) });
         menu.Add(new NativeMenuItem(IntegrationTitle("Radarr", _config.Radarr.Enabled, _radarrProbe.Health)) { Menu = BuildArrSubmenu("Radarr", _config.Radarr, ArrClient.Kind.Movie) });
+        menu.Add(new NativeMenuItemSeparator());
+
+        menu.Add(Disabled("Services"));
+        menu.Add(new NativeMenuItem(IntegrationTitle("AI classifier", _config.AiClassifier.Enabled, _aiHealth)) { Menu = BuildAiClassifierSubmenu() });
         menu.Add(new NativeMenuItem(IntegrationTitle("Telegram bot", _config.Telegram.Enabled, _telegramHealth)) { Menu = BuildTelegramSubmenu() });
         menu.Add(new NativeMenuItem(IntegrationTitle("Whisper transcription", _config.WhisperAsr.Enabled, _whisperAsrHealth)) { Menu = BuildWhisperAsrSubmenu() });
         menu.Add(new NativeMenuItem(FeatureTitle("Web search", _config.WebSearch.Enabled)) { Menu = BuildWebSearchSubmenu() });
         menu.Add(new NativeMenuItem(FeatureTitle("Webhook receipt", _config.WebhookReceipt.Enabled)) { Menu = BuildWebhookReceiptSubmenu() });
         menu.Add(new NativeMenuItemSeparator());
 
-        menu.Add(Action("Edit config…", OpenConfig));
-        menu.Add(Action("Reload config", () => _ = ReloadConfigAsync()));
-
-        var startup = new NativeMenuItem("Start at login")
-        {
-            ToggleType = NativeMenuItemToggleType.CheckBox,
-            IsChecked = StartupManager.IsSupported && SafeStartupEnabled(),
-            IsEnabled = StartupManager.IsSupported,
-        };
-        startup.Click += (_, _) => ToggleStartup();
-        menu.Add(startup);
-
-        menu.Add(Action("View log", ShowLog));
-        menu.Add(Action("Open log folder", () => OpenPath(_log.LogDirectory)));
-        menu.Add(new NativeMenuItemSeparator());
-
-        var checkUpdates = new NativeMenuItem("Check for updates automatically")
-        {
-            ToggleType = NativeMenuItemToggleType.CheckBox,
-            IsChecked = _config.CheckForUpdates,
-        };
-        checkUpdates.Click += (_, _) => ToggleCheckForUpdates();
-        menu.Add(checkUpdates);
-        menu.Add(Action("Check for updates", () => _ = RunUpdateCheckAsync(manual: true)));
-        if (_updateAvailable is { AssetUrl: not null } dl && _downloadedUpdatePath is null && !_updateDownloadInFlight)
-            menu.Add(Action($"⬇ Download update (v{dl.Version})", () => _ = DownloadUpdateAsync(dl)));
+        menu.Add(new NativeMenuItem("Settings") { Menu = BuildSettingsSubmenu() });
+        menu.Add(new NativeMenuItem(_updateAvailable is { } u ? $"Updates (v{u.Version} available)" : "Updates") { Menu = BuildUpdatesSubmenu() });
+        menu.Add(new NativeMenuItem("Logs") { Menu = BuildLogsSubmenu() });
         menu.Add(new NativeMenuItemSeparator());
 
         menu.Add(Disabled($"Index2SP v{AppInfo.Version}"));
@@ -301,19 +288,19 @@ public sealed class TrayController : IDisposable
 
     private string SpSubmenuTitle() => _spHealth switch
     {
-        SpHealth.Ok => "Super Productivity (OK)",
-        SpHealth.Unreachable => "Super Productivity (Unreachable)",
-        _ => "Super Productivity",
+        SpHealth.Ok => "🟢 Super Productivity",
+        SpHealth.Unreachable => "🔴 Super Productivity",
+        _ => "🟡 Super Productivity",
     };
 
     private static string IntegrationTitle(string name, bool enabled, SpHealth health)
     {
-        if (!enabled) return $"{name} (Disabled)";
+        if (!enabled) return $"⚪ {name} (disabled)";
         return health switch
         {
-            SpHealth.Ok => $"{name} (OK)",
-            SpHealth.Unreachable => $"{name} (Unreachable)",
-            _ => name,
+            SpHealth.Ok => $"🟢 {name}",
+            SpHealth.Unreachable => $"🔴 {name}",
+            _ => $"🟡 {name}",
         };
     }
 
@@ -343,7 +330,47 @@ public sealed class TrayController : IDisposable
     }
 
     private static string FeatureTitle(string name, bool enabled) =>
-        enabled ? name : $"{name} (Disabled)";
+        enabled ? $"🟢 {name}" : $"⚪ {name} (disabled)";
+
+    private NativeMenu BuildSettingsSubmenu()
+    {
+        var m = new NativeMenu();
+        m.Add(Action("Edit config…", OpenConfig));
+        m.Add(Action("Reload config", () => _ = ReloadConfigAsync()));
+        var startup = new NativeMenuItem("Start at login")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = StartupManager.IsSupported && SafeStartupEnabled(),
+            IsEnabled = StartupManager.IsSupported,
+        };
+        startup.Click += (_, _) => ToggleStartup();
+        m.Add(startup);
+        return m;
+    }
+
+    private NativeMenu BuildUpdatesSubmenu()
+    {
+        var m = new NativeMenu();
+        var checkUpdates = new NativeMenuItem("Check automatically")
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = _config.CheckForUpdates,
+        };
+        checkUpdates.Click += (_, _) => ToggleCheckForUpdates();
+        m.Add(checkUpdates);
+        m.Add(Action("Check now", () => _ = RunUpdateCheckAsync(manual: true)));
+        if (_updateAvailable is { } avail)
+            m.Add(Action($"Open release page (v{avail.Version})", () => OpenPath(avail.Url)));
+        return m;
+    }
+
+    private NativeMenu BuildLogsSubmenu()
+    {
+        var m = new NativeMenu();
+        m.Add(Action("View log", ShowLog));
+        m.Add(Action("Open log folder", () => OpenPath(_log.LogDirectory)));
+        return m;
+    }
 
     private static NativeMenuItem Disabled(string header) => new(header) { IsEnabled = false };
 
@@ -354,85 +381,9 @@ public sealed class TrayController : IDisposable
         return item;
     }
 
-    private string StatusLine()
-    {
-        if (_server?.IsRunning != true) return "Listener stopped";
-        var sp = _spHealth switch
-        {
-            SpHealth.Ok => "SP reachable",
-            SpHealth.Unreachable => "SP unreachable",
-            _ => "SP not checked yet",
-        };
-        var line = $"Listening on {_config.ListenAddress}:{_config.Port}{_config.WebhookPath}  ·  {sp}";
-
-        if (!string.IsNullOrWhiteSpace(_config.Joplin.AuthToken))
-        {
-            var joplin = _joplinHealth switch
-            {
-                SpHealth.Ok => "Joplin reachable",
-                SpHealth.Unreachable => "Joplin unreachable",
-                _ => "Joplin not checked yet",
-            };
-            line += $"  ·  {joplin}";
-        }
-
-        if (!string.IsNullOrWhiteSpace(_config.GoogleCalendar.RefreshToken))
-        {
-            var google = _googleHealth switch
-            {
-                SpHealth.Ok => "Calendar reachable",
-                SpHealth.Unreachable => "Calendar unreachable",
-                _ => "Calendar not checked yet",
-            };
-            line += $"  ·  {google}";
-        }
-
-        if (!string.IsNullOrWhiteSpace(_config.Beeper.ApiToken))
-        {
-            var beeper = _beeperHealth switch
-            {
-                SpHealth.Ok => "Beeper reachable",
-                SpHealth.Unreachable => "Beeper unreachable",
-                _ => "Beeper not checked yet",
-            };
-            line += $"  ·  {beeper}";
-        }
-
-        if (_config.Telegram.Enabled)
-        {
-            var telegram = _telegramHealth switch
-            {
-                SpHealth.Ok => "Telegram reachable",
-                SpHealth.Unreachable => "Telegram unreachable",
-                _ => "Telegram not checked yet",
-            };
-            line += $"  ·  {telegram}";
-        }
-
-        if (_config.AiClassifier.Enabled)
-        {
-            var ai = _aiHealth switch
-            {
-                SpHealth.Ok => "AI reachable",
-                SpHealth.Unreachable => "AI unreachable",
-                _ => "AI not checked yet",
-            };
-            line += $"  ·  {ai}";
-        }
-
-        if (_config.WhisperAsr.Enabled)
-        {
-            var whisper = _whisperAsrHealth switch
-            {
-                SpHealth.Ok => "Whisper ASR reachable",
-                SpHealth.Unreachable => "Whisper ASR unreachable",
-                _ => "Whisper ASR not checked yet",
-            };
-            line += $"  ·  {whisper}";
-        }
-
-        return line;
-    }
+    private string StatusLine() => _server?.IsRunning == true
+        ? $"Listening on {_config.ListenAddress}:{_config.Port}{_config.WebhookPath}"
+        : "Listener stopped";
 
     private NativeMenu BuildProjectSubmenu()
     {
@@ -941,7 +892,7 @@ public sealed class TrayController : IDisposable
             () => _ = SetJoplinTokenAsync()));
         m.Add(new NativeMenuItem("Default notebook") { Menu = BuildJoplinNotebookSubmenu() });
         m.Add(new NativeMenuItem("Default tag") { Menu = BuildJoplinTagsSubmenu() });
-        m.Add(Action("Test Joplin connection", () => _ = RunJoplinHealthCheckAsync(manual: true)));
+        m.Add(Action("Test connection", () => _ = RunJoplinHealthCheckAsync(manual: true)));
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.AuthToken) ? "No auth token set" : "Auth token is set"));
         return m;
     }
@@ -1038,7 +989,7 @@ public sealed class TrayController : IDisposable
         if (connected)
             m.Add(Action("Disconnect", DisconnectGoogleCalendar));
         m.Add(new NativeMenuItem("Default calendar") { Menu = BuildGoogleCalendarPickerSubmenu() });
-        m.Add(Action("Test Google Calendar connection", () => _ = RunGoogleCalendarHealthCheckAsync(manual: true)));
+        m.Add(Action("Test connection", () => _ = RunGoogleCalendarHealthCheckAsync(manual: true)));
         m.Add(Disabled(connected ? "Connected" : "Not connected"));
         return m;
     }
@@ -1084,7 +1035,7 @@ public sealed class TrayController : IDisposable
 
         m.Add(Action(string.IsNullOrWhiteSpace(cfg.ApiToken) ? "Set API token…" : "Change API token…",
             () => _ = SetBeeperTokenAsync()));
-        m.Add(Action("Test Beeper connection", () => _ = RunBeeperHealthCheckAsync(manual: true)));
+        m.Add(Action("Test connection", () => _ = RunBeeperHealthCheckAsync(manual: true)));
         m.Add(Disabled(string.IsNullOrWhiteSpace(cfg.ApiToken) ? "No API token set" : "API token is set"));
         m.Add(Disabled("Sends only when the recipient's name matches exactly one existing chat"));
         return m;
@@ -1540,9 +1491,9 @@ public sealed class TrayController : IDisposable
     /// useful to probe, and Joplin may not even be installed.</summary>
     private async Task RunJoplinHealthCheckAsync(bool manual)
     {
-        if (string.IsNullOrWhiteSpace(_config.Joplin.AuthToken))
+        if (!_config.Joplin.Enabled || string.IsNullOrWhiteSpace(_config.Joplin.AuthToken))
         {
-            if (manual) Notify("Joplin", "No auth token set — nothing to test.", NotifyKind.Error, force: true);
+            if (manual) Notify("Joplin", _config.Joplin.Enabled ? "No auth token set — nothing to test." : "Joplin is disabled.", NotifyKind.Error, force: true);
             return;
         }
         if (!manual && _joplinHealthCheckInFlight) return;
@@ -1598,9 +1549,9 @@ public sealed class TrayController : IDisposable
     /// <summary>Only runs once connected — with no refresh token there's nothing to probe.</summary>
     private async Task RunGoogleCalendarHealthCheckAsync(bool manual)
     {
-        if (string.IsNullOrWhiteSpace(_config.GoogleCalendar.RefreshToken))
+        if (!_config.GoogleCalendar.Enabled || string.IsNullOrWhiteSpace(_config.GoogleCalendar.RefreshToken))
         {
-            if (manual) Notify("Google Calendar", "Not connected — run Connect… first.", NotifyKind.Error, force: true);
+            if (manual) Notify("Google Calendar", _config.GoogleCalendar.Enabled ? "Not connected — run Connect… first." : "Google Calendar is disabled.", NotifyKind.Error, force: true);
             return;
         }
         if (!manual && _googleHealthCheckInFlight) return;
@@ -1656,9 +1607,9 @@ public sealed class TrayController : IDisposable
     /// <summary>Only runs when an API token is configured.</summary>
     private async Task RunBeeperHealthCheckAsync(bool manual)
     {
-        if (string.IsNullOrWhiteSpace(_config.Beeper.ApiToken))
+        if (!_config.Beeper.Enabled || string.IsNullOrWhiteSpace(_config.Beeper.ApiToken))
         {
-            if (manual) Notify("Beeper", "No API token set — nothing to test.", NotifyKind.Error, force: true);
+            if (manual) Notify("Beeper", _config.Beeper.Enabled ? "No API token set — nothing to test." : "Beeper is disabled.", NotifyKind.Error, force: true);
             return;
         }
         if (!manual && _beeperHealthCheckInFlight) return;
@@ -1799,7 +1750,7 @@ public sealed class TrayController : IDisposable
     {
         if (!_config.Telegram.Enabled || string.IsNullOrWhiteSpace(_config.Telegram.BotToken))
         {
-            if (manual) Notify("Telegram", "No bot token set — nothing to test.", NotifyKind.Error, force: true);
+            if (manual) Notify("Telegram", _config.Telegram.Enabled ? "No bot token set — nothing to test." : "Telegram is disabled.", NotifyKind.Error, force: true);
             return;
         }
         if (!manual && _telegramHealthCheckInFlight) return;
@@ -2136,12 +2087,12 @@ public sealed class TrayController : IDisposable
     /// several separate pop-ups.</summary>
     private async Task RunAllConnectionsTestAsync()
     {
-        var joplinEnabled = !string.IsNullOrWhiteSpace(_config.Joplin.AuthToken);
-        var googleEnabled = !string.IsNullOrWhiteSpace(_config.GoogleCalendar.RefreshToken);
-        var beeperEnabled = !string.IsNullOrWhiteSpace(_config.Beeper.ApiToken);
-        var homeEnabled = !string.IsNullOrWhiteSpace(_config.HomeAssistant.AccessToken);
-        var sonarrEnabled = !string.IsNullOrWhiteSpace(_config.Sonarr.ApiKey);
-        var radarrEnabled = !string.IsNullOrWhiteSpace(_config.Radarr.ApiKey);
+        var joplinEnabled = _config.Joplin.Enabled && !string.IsNullOrWhiteSpace(_config.Joplin.AuthToken);
+        var googleEnabled = _config.GoogleCalendar.Enabled && !string.IsNullOrWhiteSpace(_config.GoogleCalendar.RefreshToken);
+        var beeperEnabled = _config.Beeper.Enabled && !string.IsNullOrWhiteSpace(_config.Beeper.ApiToken);
+        var homeEnabled = _config.HomeAssistant.Enabled && !string.IsNullOrWhiteSpace(_config.HomeAssistant.AccessToken);
+        var sonarrEnabled = _config.Sonarr.Enabled && !string.IsNullOrWhiteSpace(_config.Sonarr.ApiKey);
+        var radarrEnabled = _config.Radarr.Enabled && !string.IsNullOrWhiteSpace(_config.Radarr.ApiKey);
 
         // Independent probes — run them together instead of waiting on each in turn.
         await Task.WhenAll(
@@ -2297,7 +2248,7 @@ public sealed class TrayController : IDisposable
         var tags = await FetchAsync(c => c.GetTagsAsync(), "tags", notifyOnError);
         if (tags is not null) _tags = tags;
 
-        if (!string.IsNullOrWhiteSpace(_config.Joplin.AuthToken))
+        if (_config.Joplin.Enabled && !string.IsNullOrWhiteSpace(_config.Joplin.AuthToken))
         {
             try
             {
@@ -2312,7 +2263,7 @@ public sealed class TrayController : IDisposable
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(_config.GoogleCalendar.RefreshToken))
+        if (_config.GoogleCalendar.Enabled && !string.IsNullOrWhiteSpace(_config.GoogleCalendar.RefreshToken))
         {
             try
             {
